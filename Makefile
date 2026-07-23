@@ -13,29 +13,32 @@ GOTEST=$(GOCMD) test
 GOVET=$(GOCMD) vet
 GOFMT=gofmt
 
-.PHONY: all build clean test vet fmt help
+.PHONY: all build clean test vet fmt help web
 
 all: help
 
+web:
+	cd web && npm run build
+
 ## build: Build the binary
-build: ## Build the binary
+build: web ## Build the binary
 	@echo "Building $(BINARY_NAME)..."
-	@mkdir -p $(BIN_DIR)
-	$(GOBUILD) $(LDFLAGS) -o $(BIN_DIR)/$(BINARY_NAME) main.go
+	$(GOBUILD) $(LDFLAGS) -o $(BINARY_NAME) main.go
 
 ## clean: Remove build artifacts
 clean: ## Remove build artifacts
 	@echo "Cleaning..."
 	$(GOCLEAN)
-	rm -rf $(BIN_DIR)
+	rm -rf $(BINARY_NAME) web/dist
+
 
 ## test: Run tests
-test: ## Run tests
+test: web ## Run tests
 	@echo "Running tests..."
 	$(GOTEST) -v ./...
 
 ## vet: Run go vet
-vet: ## Run go vet
+vet: web ## Run go vet
 	@echo "Running go vet..."
 	$(GOVET) ./...
 

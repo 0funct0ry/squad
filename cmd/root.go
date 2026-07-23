@@ -3,7 +3,12 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"runtime"
+	"time"
 
+	"github.com/0funct0ry/squad/internal/db"
+	"github.com/0funct0ry/squad/internal/server"
 	"github.com/spf13/cobra"
 )
 
@@ -12,20 +17,83 @@ var (
 	CommitSHA = "none"
 )
 
+type Config struct {
+	Addr           string
+	Port           int
+	Write          bool
+	Rest           bool
+	Open           bool
+	ReadOnlyPragma bool
+	Token          string
+	LogLevel       string
+}
+
+var cfg Config
+
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
-	Use:     "squad",
+	Use:     "squad <db>",
 	Version: Version,
-	Short:   "A brief description of your application",
-	Long: `A longer description that spans multiple lines and likely contains
-examples and usage of using your application. For example:
-
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
+	Short:   "squad is a single-binary web-based SQLite client",
+	Long:    `squad opens a SQLite database and starts a web server for browsing, querying, and managing your SQLite databases.`,
+	Args:    cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("squad called")
+		dbPath := args[0]
+
+		// Determine if database should be opened in read-only mode.
+		// Read-only mode is active if Write is false.
+		// Read-only pragma controls whether we pass mode=ro.
+		readOnly := !cfg.Write && cfg.ReadOnlyPragma
+
+		fmt.Printf("squad %s\n", Version)
+		modeStr := "read-only"
+		if cfg.Write {
+			modeStr = "write"
+		}
+		fmt.Printf("  database : %s  (%s)\n", dbPath, modeStr)
+
+		// Open the database
+		database, err := db.OpenDB(dbPath, readOnly)
+		if err != nil {
+			fmt.Printf("Error: failed to open database: %v\n", err)
+			os.Exit(1)
+		}
+		defer database.Close()
+
+		// Start the server
+		srv := server.NewServer(database, dbPath, cfg.Write)
+		addr := fmt.Sprintf("%s:%d", cfg.Addr, cfg.Port)
+		fmt.Printf("  address  : http://%s\n", addr)
+		fmt.Println("  press Ctrl+C to stop")
+
+		// If Open is true, open default browser after a short delay
+		if cfg.Open {
+			go func() {
+				time.Sleep(500 * time.Millisecond)
+				openBrowser(fmt.Sprintf("http://%s", addr))
+			}()
+		}
+
+		if err := srv.Start(addr); err != nil {
+			fmt.Printf("Error starting server: %v\n", err)
+			os.Exit(1)
+		}
 	},
+}
+
+func openBrowser(url string) {
+	var err error
+	switch runtime.GOOS {
+	case "linux":
+		err = exec.Command("xdg-open", url).Start()
+	case "windows":
+		err = exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
+	case "darwin":
+		err = exec.Command("open", url).Start()
+	default:
+		err = fmt.Errorf("unsupported platform")
+	}
+	_ = err // Ignore error, don't crash CLI if browser fails to open
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
@@ -39,4 +107,14 @@ func Execute() {
 
 func init() {
 	rootCmd.SetVersionTemplate(fmt.Sprintf("squad version %s (commit: %s)\n", Version, CommitSHA))
+
+	// Bind flags to Config struct
+	rootCmd.Flags().StringVar(&cfg.Addr, "addr", "127.0.0.1", "Bind address")
+	rootCmd.Flags().IntVar(&cfg.Port, "port", 7071, "Port to listen on")
+	rootCmd.Flags().BoolVar(&cfg.Write, "write", false, "Enable mutations (DDL, DML, write operations)")
+	rootCmd.Flags().BoolVar(&cfg.Rest, "rest", false, "Enable auto REST endpoints for tables")
+	rootCmd.Flags().BoolVar(&cfg.Open, "open", true, "Auto-open default browser on start")
+	rootCmd.Flags().BoolVar(&cfg.ReadOnlyPragma, "read-only-pragma", true, "Open SQLite with mode=ro when not --write")
+	rootCmd.Flags().StringVar(&cfg.Token, "token", "", "Optional bearer token gate for the API")
+	rootCmd.Flags().StringVar(&cfg.LogLevel, "log-level", "info", "Log level (debug/info/warn/error)")
 }
