@@ -19,12 +19,17 @@ interface ColumnInfo {
   notnull: boolean;
   defaultVal: string | null;
   pk: number;
+  hidden: number;
+  generated: 'virtual' | 'stored' | null;
 }
 
 interface IndexInfo {
   name: string;
   unique: boolean;
+  origin: string;
+  partial: boolean;
   columns: string[];
+  sql: string | null;
 }
 
 interface ForeignKeyInfo {
@@ -44,7 +49,12 @@ interface TriggerInfo {
 }
 
 interface TableSchema {
+  name: string;
+  type: 'table' | 'view';
+  rowCount: number;
+  withoutRowid: boolean;
   columns: ColumnInfo[];
+  primaryKey: string[];
   indexes: IndexInfo[];
   foreignKeys: ForeignKeyInfo[];
   triggers: TriggerInfo[];
@@ -62,6 +72,8 @@ export default function App() {
   const [tables, setTables] = useState<TableInfo[]>([]);
   const [selectedTable, setSelectedTable] = useState<TableInfo | null>(null);
   const [schema, setSchema] = useState<TableSchema | null>(null);
+  const [schemaError, setSchemaError] = useState<string | null>(null);
+  const [blobModal, setBlobModal] = useState<{ column: string; hex: string } | null>(null);
   const [rowsData, setRowsData] = useState<RowsData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -127,6 +139,7 @@ export default function App() {
   useEffect(() => {
     if (!selectedTable) return;
     setSchema(null);
+    setSchemaError(null);
     setRowsData(null);
     setPage(1);
     setOrderBy('');
@@ -140,10 +153,15 @@ export default function App() {
         if (body.ok && body.data) {
           setSchema(body.data);
         } else {
-          console.error(body.error?.message);
+          const message = body.error?.message || 'Failed to fetch table schema';
+          console.error(message);
+          setSchemaError(message);
         }
       })
-      .catch(console.error);
+      .catch((err) => {
+        console.error(err);
+        setSchemaError(err.message || 'Failed to fetch table schema');
+      });
   }, [selectedTable]);
 
   // Fetch rows
@@ -202,6 +220,26 @@ export default function App() {
   const handleFilterChange = (colName: string, value: string) => {
     setFilters(prev => ({ ...prev, [colName]: value }));
     setPage(1);
+  };
+
+  const formatHexDump = (hexStr: string): string => {
+    const bytes: number[] = [];
+    for (let i = 0; i < hexStr.length; i += 2) {
+      bytes.push(parseInt(hexStr.substring(i, i + 2), 16));
+    }
+    const lines: string[] = [];
+    for (let offset = 0; offset < bytes.length; offset += 16) {
+      const chunk = bytes.slice(offset, offset + 16);
+      const hexPart = chunk
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join(' ')
+        .padEnd(47, ' ');
+      const asciiPart = chunk
+        .map((b) => (b >= 0x20 && b <= 0x7e ? String.fromCharCode(b) : '.'))
+        .join('');
+      lines.push(`${offset.toString(16).padStart(8, '0')}  ${hexPart}  ${asciiPart}`);
+    }
+    return lines.join('\n') || '(empty)';
   };
 
   const renderCell = (val: any) => {
@@ -433,14 +471,13 @@ export default function App() {
                             if (isBlob && val !== null) {
                               const bytesCount = typeof val === 'string' ? Math.ceil(val.length / 2) : 0;
                               return (
-                                <td key={cIdx} className="px-3 py-1.5 relative group">
-                                  <span className="text-amber-600 dark:text-amber-400 cursor-help underline decoration-dotted">
+                                <td key={cIdx} className="px-3 py-1.5">
+                                  <button
+                                    onClick={() => setBlobModal({ column: colName, hex: String(val) })}
+                                    className="text-amber-600 dark:text-amber-400 underline decoration-dotted hover:text-amber-500 dark:hover:text-amber-300"
+                                  >
                                     BLOB ({bytesCount} bytes)
-                                  </span>
-                                  <div className="absolute left-3 bottom-full mb-1 hidden group-hover:block z-20 bg-slate-900 text-white text-xs font-mono rounded p-2 shadow-lg border border-slate-700 max-w-xs break-all">
-                                    Hex: {val.substring(0, 64)}
-                                    {val.length > 64 ? '...' : ''}
-                                  </div>
+                                  </button>
                                 </td>
                               );
                             }
@@ -499,6 +536,12 @@ export default function App() {
             )}
 
             {/* SCHEMA PANEL */}
+            {activeTab === 'schema' && schemaError && selectedTable && (
+              <div className="max-w-md rounded-lg border border-red-200 bg-red-50 p-6 dark:border-red-900/50 dark:bg-red-950/20">
+                <h2 className="text-lg font-semibold text-red-700 dark:text-red-400">Failed to load schema</h2>
+                <p className="mt-2 text-sm text-red-600 dark:text-red-300/80">{schemaError}</p>
+              </div>
+            )}
             {activeTab === 'schema' && schema && selectedTable && (
               <section className="space-y-6">
                 <div>
@@ -515,17 +558,45 @@ export default function App() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-700 dark:text-slate-300">
-                        {schema.columns.map((col) => (
-                          <tr key={col.name}>
-                            <td className="px-3 py-1.5">{col.name}</td>
-                            <td className="px-3 py-1.5 text-sky-500">{col.type}</td>
-                            <td className="px-3 py-1.5">{col.notnull ? 'NO' : 'YES'}</td>
-                            <td className="px-3 py-1.5 text-slate-400">
-                              {col.defaultVal !== null ? col.defaultVal : '—'}
-                            </td>
-                            <td className="px-3 py-1.5">{col.pk > 0 ? `🔑 (${col.pk})` : ''}</td>
-                          </tr>
-                        ))}
+                        {schema.columns.map((col) => {
+                          const isUnique = schema.indexes.some(
+                            (idx) => idx.unique && idx.columns.length === 1 && idx.columns[0] === col.name
+                          );
+                          return (
+                            <tr key={col.name}>
+                              <td className="px-3 py-1.5">
+                                <span className="inline-flex items-center gap-1.5">
+                                  {col.name}
+                                  {col.pk > 0 && (
+                                    <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-indigo-100 text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-400">
+                                      PK
+                                    </span>
+                                  )}
+                                  {isUnique && (
+                                    <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400">
+                                      UNIQUE
+                                    </span>
+                                  )}
+                                  {col.generated && (
+                                    <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400">
+                                      GENERATED {col.generated}
+                                    </span>
+                                  )}
+                                </span>
+                              </td>
+                              <td className="px-3 py-1.5 text-sky-500">{col.type}</td>
+                              <td className="px-3 py-1.5">{col.notnull ? 'NO' : 'YES'}</td>
+                              <td className="px-3 py-1.5 text-slate-400">
+                                {col.defaultVal !== null ? (
+                                  <span className="text-emerald-600 dark:text-emerald-400">{col.defaultVal}</span>
+                                ) : (
+                                  '—'
+                                )}
+                              </td>
+                              <td className="px-3 py-1.5">{col.pk > 0 ? `🔑 (${col.pk})` : ''}</td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -542,8 +613,18 @@ export default function App() {
                           <div key={idx.name} className="text-sm font-mono text-slate-700 dark:text-slate-300">
                             <span className="font-semibold text-indigo-500">{idx.name}</span>{' '}
                             <span className="text-slate-400">
-                              ({idx.columns.join(', ')}) {idx.unique && 'UNIQUE'}
-                            </span>
+                              ({idx.columns.join(', ')})
+                            </span>{' '}
+                            {idx.unique && (
+                              <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400">
+                                UNIQUE
+                              </span>
+                            )}{' '}
+                            {idx.partial && (
+                              <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400">
+                                PARTIAL
+                              </span>
+                            )}
                           </div>
                         ))
                       )}
@@ -743,6 +824,40 @@ export default function App() {
           </div>
         </main>
       </div>
+
+      {/* BLOB HEX VIEWER MODAL */}
+      {blobModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setBlobModal(null)}
+        >
+          <div
+            className="w-full max-w-2xl rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-slate-800">
+              <h3 className="font-semibold text-slate-900 dark:text-white">
+                BLOB — <span className="font-mono text-indigo-500">{blobModal.column}</span>
+              </h3>
+              <button
+                onClick={() => setBlobModal(null)}
+                className="w-7 h-7 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center text-slate-500 dark:text-slate-400"
+                title="Close"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="p-4">
+              <pre className="font-mono text-xs bg-slate-900 text-slate-100 rounded-lg p-4 overflow-auto border border-slate-800 max-h-96 whitespace-pre">
+                {formatHexDump(blobModal.hex)}
+              </pre>
+              <p className="mt-2 text-xs text-slate-400">
+                {Math.ceil(blobModal.hex.length / 2).toLocaleString()} bytes
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

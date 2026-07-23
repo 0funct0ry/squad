@@ -1,6 +1,7 @@
 package db
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -115,4 +116,143 @@ func TestTablesIntrospection(t *testing.T) {
 	if resFiltered.Rows[0][1] != "ada@example.com" {
 		t.Errorf("expected filtered row to be ada, got %+v", resFiltered.Rows[0])
 	}
+}
+
+func TestGetTableSchemaDetailed(t *testing.T) {
+	db, err := OpenDB(":memory:", false)
+	if err != nil {
+		t.Fatalf("failed to open db: %v", err)
+	}
+	defer db.Close()
+
+	_, err = db.Exec(`
+		CREATE TABLE order_items (
+			order_id INTEGER NOT NULL,
+			line_no INTEGER NOT NULL,
+			qty INTEGER NOT NULL,
+			unit_price REAL NOT NULL,
+			total REAL GENERATED ALWAYS AS (qty * unit_price) STORED,
+			PRIMARY KEY (order_id, line_no)
+		);
+
+		CREATE TABLE customers (
+			id INTEGER PRIMARY KEY,
+			active INTEGER NOT NULL DEFAULT 1
+		);
+
+		CREATE INDEX idx_customers_active ON customers(id) WHERE active = 1;
+
+		CREATE TABLE parents (
+			id INTEGER PRIMARY KEY
+		);
+		CREATE TABLE children (
+			id INTEGER PRIMARY KEY,
+			parent_id INTEGER,
+			FOREIGN KEY (parent_id) REFERENCES parents(id) ON DELETE CASCADE
+		);
+
+		CREATE VIEW customer_view AS SELECT id, active FROM customers;
+
+		CREATE TABLE "weird names" (
+			"select" INTEGER PRIMARY KEY,
+			"space col" TEXT
+		);
+	`)
+	if err != nil {
+		t.Fatalf("failed to seed db: %v", err)
+	}
+
+	t.Run("composite primary key in order", func(t *testing.T) {
+		schema, err := GetTableSchema(db, "order_items")
+		if err != nil {
+			t.Fatalf("failed to get schema: %v", err)
+		}
+		if len(schema.PrimaryKey) != 2 || schema.PrimaryKey[0] != "order_id" || schema.PrimaryKey[1] != "line_no" {
+			t.Errorf("expected composite PK [order_id, line_no], got %+v", schema.PrimaryKey)
+		}
+	})
+
+	t.Run("generated column reports stored", func(t *testing.T) {
+		schema, err := GetTableSchema(db, "order_items")
+		if err != nil {
+			t.Fatalf("failed to get schema: %v", err)
+		}
+		var found bool
+		for _, col := range schema.Columns {
+			if col.Name == "total" {
+				found = true
+				if col.Generated == nil || *col.Generated != "stored" {
+					t.Errorf("expected total to be generated:stored, got %+v", col)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("expected to find generated column 'total', columns: %+v", schema.Columns)
+		}
+	})
+
+	t.Run("partial index reports partial true", func(t *testing.T) {
+		schema, err := GetTableSchema(db, "customers")
+		if err != nil {
+			t.Fatalf("failed to get schema: %v", err)
+		}
+		var found bool
+		for _, idx := range schema.Indexes {
+			if idx.Name == "idx_customers_active" {
+				found = true
+				if !idx.Partial {
+					t.Errorf("expected idx_customers_active to be partial, got %+v", idx)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("expected to find idx_customers_active, indexes: %+v", schema.Indexes)
+		}
+	})
+
+	t.Run("foreign key reports on delete cascade", func(t *testing.T) {
+		schema, err := GetTableSchema(db, "children")
+		if err != nil {
+			t.Fatalf("failed to get schema: %v", err)
+		}
+		if len(schema.ForeignKeys) != 1 || schema.ForeignKeys[0].OnDelete != "CASCADE" {
+			t.Errorf("expected FK with ON DELETE CASCADE, got %+v", schema.ForeignKeys)
+		}
+	})
+
+	t.Run("view returns type view with empty indexes and fks", func(t *testing.T) {
+		schema, err := GetTableSchema(db, "customer_view")
+		if err != nil {
+			t.Fatalf("failed to get schema: %v", err)
+		}
+		if schema.Type != "view" {
+			t.Errorf("expected type view, got %s", schema.Type)
+		}
+		if len(schema.Indexes) != 0 || len(schema.ForeignKeys) != 0 {
+			t.Errorf("expected no indexes/FKs for view, got indexes=%+v fks=%+v", schema.Indexes, schema.ForeignKeys)
+		}
+		if len(schema.Columns) != 2 {
+			t.Errorf("expected 2 view columns, got %+v", schema.Columns)
+		}
+	})
+
+	t.Run("missing table returns ErrNotFound", func(t *testing.T) {
+		_, err := GetTableSchema(db, "does_not_exist")
+		if !errors.Is(err, ErrNotFound) {
+			t.Errorf("expected ErrNotFound, got %v", err)
+		}
+	})
+
+	t.Run("quoted identifier table resolves correctly", func(t *testing.T) {
+		schema, err := GetTableSchema(db, "weird names")
+		if err != nil {
+			t.Fatalf("failed to get schema for quoted table: %v", err)
+		}
+		if len(schema.Columns) != 2 {
+			t.Errorf("expected 2 columns, got %+v", schema.Columns)
+		}
+		if schema.PrimaryKey[0] != "select" {
+			t.Errorf("expected pk 'select', got %+v", schema.PrimaryKey)
+		}
+	})
 }

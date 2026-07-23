@@ -2,9 +2,16 @@ package db
 
 import (
 	"database/sql"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"sort"
 	"strconv"
+	"strings"
 )
+
+// ErrNotFound is returned when a named table/view does not exist in sqlite_master.
+var ErrNotFound = errors.New("table or view not found")
 
 type TableInfo struct {
 	Name     string `json:"name"`
@@ -18,12 +25,17 @@ type ColumnInfo struct {
 	NotNull    bool    `json:"notnull"`
 	DefaultVal *string `json:"defaultVal"`
 	PK         int     `json:"pk"` // 0 if not pk, otherwise 1-based index
+	Hidden     int     `json:"hidden"`
+	Generated  *string `json:"generated"` // nil | "virtual" | "stored"
 }
 
 type IndexInfo struct {
 	Name    string   `json:"name"`
 	Unique  bool     `json:"unique"`
+	Origin  string   `json:"origin"`
+	Partial bool     `json:"partial"`
 	Columns []string `json:"columns"`
+	SQL     *string  `json:"sql"`
 }
 
 type ForeignKeyInfo struct {
@@ -43,11 +55,16 @@ type TriggerInfo struct {
 }
 
 type TableSchema struct {
-	Columns     []ColumnInfo     `json:"columns"`
-	Indexes     []IndexInfo      `json:"indexes"`
-	ForeignKeys []ForeignKeyInfo `json:"foreignKeys"`
-	Triggers    []TriggerInfo    `json:"triggers"`
-	DDL         string           `json:"ddl"`
+	Name         string           `json:"name"`
+	Type         string           `json:"type"` // "table" or "view"
+	RowCount     int64            `json:"rowCount"`
+	WithoutRowid bool             `json:"withoutRowid"`
+	Columns      []ColumnInfo     `json:"columns"`
+	PrimaryKey   []string         `json:"primaryKey"`
+	Indexes      []IndexInfo      `json:"indexes"`
+	ForeignKeys  []ForeignKeyInfo `json:"foreignKeys"`
+	Triggers     []TriggerInfo    `json:"triggers"`
+	DDL          string           `json:"ddl"`
 }
 
 type RowResult struct {
@@ -109,22 +126,40 @@ func GetTables(db *sql.DB) ([]TableInfo, error) {
 func GetTableSchema(db *sql.DB, tableName string) (*TableSchema, error) {
 	quotedName := QuoteIdentifier(tableName)
 
-	// 1. Columns
-	colRows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", quotedName))
+	// 0. Resolve against sqlite_master
+	var objType string
+	err := db.QueryRow(
+		"SELECT type FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
+		tableName,
+	).Scan(&objType)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("failed to resolve table: %w", err)
+	}
+
+	// 1. Columns (table_xinfo includes hidden/generated columns)
+	colRows, err := db.Query(fmt.Sprintf("PRAGMA table_xinfo(%s)", quotedName))
 	if err != nil {
 		return nil, fmt.Errorf("failed to get table info: %w", err)
 	}
 	defer colRows.Close()
 
-	var columns []ColumnInfo
+	columns := []ColumnInfo{}
+	var primaryKey []struct {
+		name string
+		pk   int
+	}
 	for colRows.Next() {
 		var cid int
 		var name, ctype string
 		var notnull int
 		var dfltVal sql.NullString
 		var pk int
+		var hidden int
 
-		if err := colRows.Scan(&cid, &name, &ctype, &notnull, &dfltVal, &pk); err != nil {
+		if err := colRows.Scan(&cid, &name, &ctype, &notnull, &dfltVal, &pk, &hidden); err != nil {
 			return nil, fmt.Errorf("failed to scan column info: %w", err)
 		}
 
@@ -133,13 +168,38 @@ func GetTableSchema(db *sql.DB, tableName string) (*TableSchema, error) {
 			dflt = &dfltVal.String
 		}
 
+		var generated *string
+		switch hidden {
+		case 2:
+			v := "virtual"
+			generated = &v
+		case 3:
+			v := "stored"
+			generated = &v
+		}
+
 		columns = append(columns, ColumnInfo{
 			Name:       name,
 			Type:       ctype,
 			NotNull:    notnull != 0,
 			DefaultVal: dflt,
 			PK:         pk,
+			Hidden:     hidden,
+			Generated:  generated,
 		})
+
+		if pk > 0 {
+			primaryKey = append(primaryKey, struct {
+				name string
+				pk   int
+			}{name, pk})
+		}
+	}
+
+	sort.Slice(primaryKey, func(i, j int) bool { return primaryKey[i].pk < primaryKey[j].pk })
+	pkNames := make([]string, len(primaryKey))
+	for i, p := range primaryKey {
+		pkNames[i] = p.name
 	}
 
 	// 2. Indexes
@@ -149,7 +209,7 @@ func GetTableSchema(db *sql.DB, tableName string) (*TableSchema, error) {
 	}
 	defer idxRows.Close()
 
-	var indexes []IndexInfo
+	indexes := []IndexInfo{}
 	for idxRows.Next() {
 		var seq int
 		var name string
@@ -167,7 +227,7 @@ func GetTableSchema(db *sql.DB, tableName string) (*TableSchema, error) {
 			return nil, fmt.Errorf("failed to get index info: %w", err)
 		}
 
-		var cols []string
+		cols := []string{}
 		for infoRows.Next() {
 			var seqno, cid int
 			var colName sql.NullString
@@ -181,10 +241,25 @@ func GetTableSchema(db *sql.DB, tableName string) (*TableSchema, error) {
 		}
 		infoRows.Close()
 
+		var indexSQL *string
+		var sqlStr sql.NullString
+		err = db.QueryRow(
+			"SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?", name,
+		).Scan(&sqlStr)
+		if err != nil && err != sql.ErrNoRows {
+			return nil, fmt.Errorf("failed to get index DDL: %w", err)
+		}
+		if sqlStr.Valid {
+			indexSQL = &sqlStr.String
+		}
+
 		indexes = append(indexes, IndexInfo{
 			Name:    name,
 			Unique:  unique != 0,
+			Origin:  origin,
+			Partial: partial != 0,
 			Columns: cols,
+			SQL:     indexSQL,
 		})
 	}
 
@@ -195,7 +270,7 @@ func GetTableSchema(db *sql.DB, tableName string) (*TableSchema, error) {
 	}
 	defer fkRows.Close()
 
-	var fkeys []ForeignKeyInfo
+	fkeys := []ForeignKeyInfo{}
 	for fkRows.Next() {
 		var id, seq int
 		var table string
@@ -225,7 +300,7 @@ func GetTableSchema(db *sql.DB, tableName string) (*TableSchema, error) {
 	}
 	defer trigRows.Close()
 
-	var triggers []TriggerInfo
+	triggers := []TriggerInfo{}
 	for trigRows.Next() {
 		var name, sqlStr string
 		if err := trigRows.Scan(&name, &sqlStr); err != nil {
@@ -243,13 +318,25 @@ func GetTableSchema(db *sql.DB, tableName string) (*TableSchema, error) {
 	if err != nil && err != sql.ErrNoRows {
 		return nil, fmt.Errorf("failed to get DDL: %w", err)
 	}
+	withoutRowid := strings.Contains(strings.ToLower(ddl), "without rowid")
+
+	// 6. Row count
+	var rowCount int64
+	if err := db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", quotedName)).Scan(&rowCount); err != nil {
+		rowCount = 0
+	}
 
 	return &TableSchema{
-		Columns:     columns,
-		Indexes:     indexes,
-		ForeignKeys: fkeys,
-		Triggers:    triggers,
-		DDL:         ddl,
+		Name:         tableName,
+		Type:         objType,
+		RowCount:     rowCount,
+		WithoutRowid: withoutRowid,
+		Columns:      columns,
+		PrimaryKey:   pkNames,
+		Indexes:      indexes,
+		ForeignKeys:  fkeys,
+		Triggers:     triggers,
+		DDL:          ddl,
 	}, nil
 }
 
@@ -327,7 +414,19 @@ func GetTableRows(db *sql.DB, tableName string, params RowQueryParams) (*RowResu
 		return nil, fmt.Errorf("failed to get columns: %w", err)
 	}
 
-	var resultRows [][]interface{}
+	// Map result columns to their declared type so BLOB columns can be
+	// hex-encoded rather than treated as raw (possibly invalid-UTF8) text.
+	colIsBlob := make([]bool, len(cols))
+	for i, colName := range cols {
+		for _, sc := range schema.Columns {
+			if sc.Name == colName {
+				colIsBlob[i] = strings.EqualFold(sc.Type, "blob")
+				break
+			}
+		}
+	}
+
+	resultRows := [][]interface{}{}
 	for rows.Next() {
 		dest := make([]interface{}, len(cols))
 		rawValues := make([][]byte, len(cols))
@@ -343,6 +442,8 @@ func GetTableRows(db *sql.DB, tableName string, params RowQueryParams) (*RowResu
 		for i, raw := range rawValues {
 			if raw == nil {
 				rowVals[i] = nil
+			} else if colIsBlob[i] {
+				rowVals[i] = hex.EncodeToString(raw)
 			} else {
 				valStr := string(raw)
 				if valInt, err := strconv.ParseInt(valStr, 10, 64); err == nil {

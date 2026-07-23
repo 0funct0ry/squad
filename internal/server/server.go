@@ -2,6 +2,7 @@ package server
 
 import (
 	"database/sql"
+	"errors"
 	"io/fs"
 	"net/http"
 	"path/filepath"
@@ -147,6 +148,13 @@ func (s *Server) handleTableSchema(c *gin.Context) {
 	name := c.Param("name")
 	schema, err := db.GetTableSchema(s.db, name)
 	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"ok":    false,
+				"error": gin.H{"code": "NOT_FOUND", "message": "table or view not found"},
+			})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"ok":    false,
 			"error": gin.H{"code": "DB_ERROR", "message": err.Error()},

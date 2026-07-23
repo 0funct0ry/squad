@@ -109,4 +109,29 @@ func TestTablesHandlers(t *testing.T) {
 	if !rowsResult.Ok || rowsResult.Data.Total != 1 || rowsResult.Data.Rows[0][1] != "ada@example.com" {
 		t.Errorf("unexpected filtered rows result: %+v", rowsResult)
 	}
+
+	// 5. GET /api/tables/does_not_exist/schema -> 404 NOT_FOUND
+	resp, err = http.Get(ts.URL + "/api/tables/does_not_exist/schema")
+	if err != nil {
+		t.Fatalf("failed to GET missing schema: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("expected status 404, got %d", resp.StatusCode)
+	}
+
+	var notFoundResult struct {
+		Ok    bool `json:"ok"`
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&notFoundResult); err != nil {
+		t.Fatalf("failed to decode not-found response: %v", err)
+	}
+	if notFoundResult.Ok || notFoundResult.Error.Code != "NOT_FOUND" {
+		t.Errorf("unexpected not-found result: %+v", notFoundResult)
+	}
 }
