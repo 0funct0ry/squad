@@ -23,13 +23,14 @@ web:
 ## build: Build the binary
 build: web ## Build the binary
 	@echo "Building $(BINARY_NAME)..."
-	$(GOBUILD) $(LDFLAGS) -o $(BINARY_NAME) main.go
+	mkdir -p $(BIN_DIR)
+	$(GOBUILD) $(LDFLAGS) -o $(BIN_DIR)/$(BINARY_NAME) main.go
 
 ## clean: Remove build artifacts
 clean: ## Remove build artifacts
 	@echo "Cleaning..."
 	$(GOCLEAN)
-	rm -rf $(BINARY_NAME) web/dist
+	rm -rf $(BIN_DIR) web/dist $(BINARY_NAME)
 
 
 ## test: Run tests

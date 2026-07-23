@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/0funct0ry/squad/internal/db"
@@ -39,6 +40,9 @@ func (s *Server) setupRoutes() {
 	api := s.router.Group("/api")
 	{
 		api.GET("/meta", s.handleMeta)
+		api.GET("/tables", s.handleTables)
+		api.GET("/tables/:name/schema", s.handleTableSchema)
+		api.GET("/tables/:name/rows", s.handleTableRows)
 	}
 
 	// Embedded SPA serving
@@ -120,6 +124,95 @@ func (s *Server) handleMeta(c *gin.Context) {
 			"mode":          mode,
 			"sqliteVersion": sqliteVer,
 			"sizeBytes":     size,
+		},
+	})
+}
+
+func (s *Server) handleTables(c *gin.Context) {
+	tables, err := db.GetTables(s.db)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"ok":    false,
+			"error": gin.H{"code": "DB_ERROR", "message": err.Error()},
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"ok":   true,
+		"data": tables,
+	})
+}
+
+func (s *Server) handleTableSchema(c *gin.Context) {
+	name := c.Param("name")
+	schema, err := db.GetTableSchema(s.db, name)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"ok":    false,
+			"error": gin.H{"code": "DB_ERROR", "message": err.Error()},
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"ok":   true,
+		"data": schema,
+	})
+}
+
+func (s *Server) handleTableRows(c *gin.Context) {
+	name := c.Param("name")
+
+	// Parse parameters
+	limit := 100
+	if lStr := c.Query("limit"); lStr != "" {
+		if l, err := strconv.Atoi(lStr); err == nil && l > 0 {
+			limit = l
+		}
+	}
+
+	offset := 0
+	if oStr := c.Query("offset"); oStr != "" {
+		if o, err := strconv.Atoi(oStr); err == nil && o >= 0 {
+			offset = o
+		}
+	}
+
+	orderBy := c.Query("orderBy")
+	dir := c.Query("dir")
+
+	// Parse column filters (e.g. filter[id]=12 or filter[email]=ada)
+	filters := make(map[string]string)
+	queries := c.Request.URL.Query()
+	for k, v := range queries {
+		if strings.HasPrefix(k, "filter[") && strings.HasSuffix(k, "]") && len(v) > 0 {
+			col := k[7 : len(k)-1]
+			filters[col] = v[0]
+		}
+	}
+
+	params := db.RowQueryParams{
+		Limit:   limit,
+		Offset:  offset,
+		OrderBy: orderBy,
+		Dir:     dir,
+		Filters: filters,
+	}
+
+	result, err := db.GetTableRows(s.db, name, params)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"ok":    false,
+			"error": gin.H{"code": "DB_ERROR", "message": err.Error()},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"ok": true,
+		"data": gin.H{
+			"columns": result.Columns,
+			"rows":    result.Rows,
+			"total":   result.Total,
 		},
 	})
 }

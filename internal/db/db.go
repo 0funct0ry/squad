@@ -42,6 +42,11 @@ func OpenDB(path string, readOnly bool) (*sql.DB, error) {
 	return db, nil
 }
 
+// QuoteIdentifier wraps a schema/table/column name in double quotes and escapes any internal double quotes.
+func QuoteIdentifier(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
 // Meta retrieves the SQLite version and the size of the database file on disk.
 func Meta(db *sql.DB, path string) (sqliteVersion string, sizeBytes int64, err error) {
 	// Query sqlite version

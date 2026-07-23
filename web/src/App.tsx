@@ -7,12 +7,65 @@ interface MetaData {
   sizeBytes: number;
 }
 
+interface TableInfo {
+  name: string;
+  type: 'table' | 'view';
+  rowCount: number;
+}
+
+interface ColumnInfo {
+  name: string;
+  type: string;
+  notnull: boolean;
+  defaultVal: string | null;
+  pk: number;
+}
+
+interface IndexInfo {
+  name: string;
+  unique: boolean;
+  columns: string[];
+}
+
+interface ForeignKeyInfo {
+  id: number;
+  seq: number;
+  table: string;
+  from: string;
+  to: string;
+  onUpdate: string;
+  onDelete: string;
+  match: string;
+}
+
+interface TriggerInfo {
+  name: string;
+  sql: string;
+}
+
+interface TableSchema {
+  columns: ColumnInfo[];
+  indexes: IndexInfo[];
+  foreignKeys: ForeignKeyInfo[];
+  triggers: TriggerInfo[];
+  ddl: string;
+}
+
+interface RowsData {
+  columns: string[];
+  rows: any[][];
+  total: number;
+}
+
 export default function App() {
   const [meta, setMeta] = useState<MetaData | null>(null);
+  const [tables, setTables] = useState<TableInfo[]>([]);
+  const [selectedTable, setSelectedTable] = useState<TableInfo | null>(null);
+  const [schema, setSchema] = useState<TableSchema | null>(null);
+  const [rowsData, setRowsData] = useState<RowsData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
-    // Check initial theme preference
     const saved = localStorage.getItem('color-scheme');
     if (saved === 'dark' || saved === 'light') return saved;
     return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
@@ -20,9 +73,16 @@ export default function App() {
 
   const [activeTab, setActiveTab] = useState<string>('data');
   const [searchQuery, setSearchQuery] = useState<string>('');
+  
+  // Pagination & Sorting & Filtering states
+  const [page, setPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(100);
+  const [orderBy, setOrderBy] = useState<string>('');
+  const [dir, setDir] = useState<'asc' | 'desc' | ''>('');
+  const [filters, setFilters] = useState<Record<string, string>>({});
+  const [filterInputVisible, setFilterInputVisible] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
-    // Sync theme class on document element
     if (theme === 'dark') {
       document.documentElement.classList.add('dark');
       localStorage.setItem('color-scheme', 'dark');
@@ -32,19 +92,26 @@ export default function App() {
     }
   }, [theme]);
 
+  // Fetch Meta & Tables
   useEffect(() => {
-    fetch('/api/meta')
-      .then((res) => {
-        if (!res.ok) {
-          throw new Error(`Server responded with ${res.status}`);
-        }
-        return res.json();
-      })
-      .then((body) => {
-        if (body.ok && body.data) {
-          setMeta(body.data);
+    Promise.all([
+      fetch('/api/meta').then(res => res.json()),
+      fetch('/api/tables').then(res => res.json())
+    ])
+      .then(([metaBody, tablesBody]) => {
+        if (metaBody.ok && metaBody.data) {
+          setMeta(metaBody.data);
         } else {
-          throw new Error(body.error?.message || 'Failed to fetch database metadata');
+          throw new Error(metaBody.error?.message || 'Failed to fetch database metadata');
+        }
+
+        if (tablesBody.ok && tablesBody.data) {
+          setTables(tablesBody.data);
+          if (tablesBody.data.length > 0) {
+            setSelectedTable(tablesBody.data[0]);
+          }
+        } else {
+          throw new Error(tablesBody.error?.message || 'Failed to fetch database tables');
         }
       })
       .catch((err) => {
@@ -56,6 +123,56 @@ export default function App() {
       });
   }, []);
 
+  // Fetch schema and reset rows parameters on table change
+  useEffect(() => {
+    if (!selectedTable) return;
+    setSchema(null);
+    setRowsData(null);
+    setPage(1);
+    setOrderBy('');
+    setDir('');
+    setFilters({});
+    setFilterInputVisible({});
+
+    fetch(`/api/tables/${selectedTable.name}/schema`)
+      .then(res => res.json())
+      .then(body => {
+        if (body.ok && body.data) {
+          setSchema(body.data);
+        } else {
+          console.error(body.error?.message);
+        }
+      })
+      .catch(console.error);
+  }, [selectedTable]);
+
+  // Fetch rows
+  useEffect(() => {
+    if (!selectedTable) return;
+
+    const offset = (page - 1) * pageSize;
+    let url = `/api/tables/${selectedTable.name}/rows?limit=${pageSize}&offset=${offset}`;
+    if (orderBy) {
+      url += `&orderBy=${orderBy}&dir=${dir}`;
+    }
+    Object.entries(filters).forEach(([col, val]) => {
+      if (val) {
+        url += `&filter[${col}]=${encodeURIComponent(val)}`;
+      }
+    });
+
+    fetch(url)
+      .then(res => res.json())
+      .then(body => {
+        if (body.ok && body.data) {
+          setRowsData(body.data);
+        } else {
+          console.error(body.error?.message);
+        }
+      })
+      .catch(console.error);
+  }, [selectedTable, page, pageSize, orderBy, dir, filters]);
+
   const toggleTheme = () => {
     setTheme((prev) => (prev === 'light' ? 'dark' : 'light'));
   };
@@ -66,6 +183,32 @@ export default function App() {
     const sizes = ['B', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  };
+
+  const handleSort = (colName: string) => {
+    if (orderBy === colName) {
+      if (dir === 'asc') setDir('desc');
+      else if (dir === 'desc') {
+        setOrderBy('');
+        setDir('');
+      }
+    } else {
+      setOrderBy(colName);
+      setDir('asc');
+    }
+    setPage(1);
+  };
+
+  const handleFilterChange = (colName: string, value: string) => {
+    setFilters(prev => ({ ...prev, [colName]: value }));
+    setPage(1);
+  };
+
+  const renderCell = (val: any) => {
+    if (val === null || val === undefined) {
+      return <span className="text-slate-400 dark:text-slate-600 italic">NULL</span>;
+    }
+    return String(val);
   };
 
   if (loading) {
@@ -101,18 +244,18 @@ export default function App() {
   const sqliteVer = meta?.sqliteVersion || 'unknown';
   const dbSize = meta ? formatBytes(meta.sizeBytes) : '0 B';
 
-  const mockTables = [
-    { name: 'users', count: 1240 },
-    { name: 'orders', count: 5981 },
-    { name: 'products', count: 214 },
-    { name: 'order_items', count: 18204 },
-    { name: 'categories', count: 12 },
-    { name: 'sessions', count: 892 },
-  ];
-
-  const filteredTables = mockTables.filter((t) =>
+  const filteredTables = tables.filter((t) =>
     t.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
+
+  const totalRows = rowsData?.total || 0;
+  const totalPages = Math.ceil(totalRows / pageSize) || 1;
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text).then(() => {
+      alert('Copied to clipboard!');
+    });
+  };
 
   return (
     <div className="flex flex-col h-screen bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-200 antialiased font-sans">
@@ -160,26 +303,33 @@ export default function App() {
             />
           </div>
           <div className="px-3 pt-1 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
-            Tables
+            Tables & Views
           </div>
           <nav className="flex-1 overflow-y-auto px-2 text-sm space-y-0.5">
             {filteredTables.map((t) => (
               <div
                 key={t.name}
-                className="flex items-center justify-between px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer text-slate-700 dark:text-slate-300"
+                onClick={() => setSelectedTable(t)}
+                className={`flex items-center justify-between px-2 py-1.5 rounded-md cursor-pointer ${
+                  selectedTable?.name === t.name
+                    ? 'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-300'
+                    : 'hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300'
+                }`}
               >
                 <span className="flex items-center gap-2">
-                  <span className="text-slate-400 dark:text-slate-500">◫</span>
+                  <span className="text-slate-400 dark:text-slate-500">
+                    {t.type === 'view' ? '◫' : '▤'}
+                  </span>
                   <span className="font-medium font-mono text-xs">{t.name}</span>
                 </span>
-                <span className="text-xs text-slate-400 font-mono">{t.count.toLocaleString()}</span>
+                <span className="text-xs text-slate-400 font-mono">{t.rowCount.toLocaleString()}</span>
               </div>
             ))}
           </nav>
         </aside>
 
         {/* ============ MAIN CONTENT ============ */}
-        <main className="flex-1 flex flex-col min-w-0">
+        <main className="flex-1 flex flex-col min-w-0 bg-slate-50 dark:bg-slate-950">
           {/* Tabs */}
           <div className="flex items-center gap-1 px-3 h-10 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-x-auto shrink-0">
             {[
@@ -196,7 +346,11 @@ export default function App() {
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`tab ${activeTab === tab.id ? 'tab-active' : ''}`}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium white-space-nowrap ${
+                  activeTab === tab.id
+                    ? 'bg-indigo-50 text-indigo-600 dark:bg-indigo-400/10 dark:text-indigo-400'
+                    : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800'
+                }`}
               >
                 {tab.label}
               </button>
@@ -205,17 +359,16 @@ export default function App() {
 
           <div className="flex-1 overflow-auto p-4">
             {/* DATA PANEL */}
-            {activeTab === 'data' && (
-              <section className="space-y-4">
-                <div className="flex items-center justify-between">
+            {activeTab === 'data' && selectedTable && (
+              <section className="space-y-4 h-full flex flex-col min-h-0">
+                <div className="flex items-center justify-between shrink-0">
                   <h2 className="font-semibold text-slate-900 dark:text-white">
-                    <span className="font-mono text-indigo-500">users</span>{' '}
-                    <span className="text-xs text-slate-400 font-normal">1,240 rows</span>
+                    <span className="font-mono text-indigo-500">{selectedTable.name}</span>{' '}
+                    <span className="text-xs text-slate-400 font-normal">
+                      {totalRows.toLocaleString()} rows
+                    </span>
                   </h2>
                   <div className="flex items-center gap-2 text-sm">
-                    <button className="px-2.5 py-1 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-850">
-                      Filter
-                    </button>
                     <button
                       className={`px-2.5 py-1 rounded-md border border-slate-200 dark:border-slate-700 ${
                         isWrite ? 'hover:bg-slate-100 dark:hover:bg-slate-850' : 'opacity-50 cursor-not-allowed'
@@ -227,56 +380,127 @@ export default function App() {
                     </button>
                   </div>
                 </div>
-                <div className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden bg-white dark:bg-slate-900">
-                  <table className="w-full text-sm font-mono">
-                    <thead className="bg-slate-100 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400 text-left">
+
+                <div className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-auto bg-white dark:bg-slate-900 flex-1 min-h-0">
+                  <table className="w-full text-sm font-mono relative">
+                    <thead className="bg-slate-100 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400 text-left sticky top-0 z-10">
                       <tr>
-                        <th className="px-3 py-2 font-medium">id ▲</th>
-                        <th className="px-3 py-2 font-medium">email</th>
-                        <th className="px-3 py-2 font-medium">full_name</th>
-                        <th className="px-3 py-2 font-medium">is_active</th>
-                        <th className="px-3 py-2 font-medium">created_at</th>
+                        {rowsData?.columns.map((col) => {
+                          return (
+                            <th key={col} className="px-3 py-2 font-medium border-b border-slate-200 dark:border-slate-800">
+                              <div className="flex flex-col gap-1">
+                                <div
+                                  className="flex items-center gap-1 cursor-pointer select-none hover:text-indigo-500"
+                                  onClick={() => handleSort(col)}
+                                >
+                                  <span>{col}</span>
+                                  <span className="text-xs">
+                                    {orderBy === col ? (dir === 'asc' ? '▲' : '▼') : '↕'}
+                                  </span>
+                                </div>
+                                <div className="mt-1 font-normal">
+                                  {filterInputVisible[col] ? (
+                                    <input
+                                      type="text"
+                                      placeholder="Filter..."
+                                      value={filters[col] || ''}
+                                      onChange={(e) => handleFilterChange(col, e.target.value)}
+                                      className="text-xs font-normal px-1 py-0.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none w-24"
+                                    />
+                                  ) : (
+                                    <button
+                                      onClick={() => setFilterInputVisible(prev => ({ ...prev, [col]: true }))}
+                                      className="text-[10px] text-slate-400 hover:text-indigo-500 font-normal px-1 rounded border border-transparent hover:border-slate-200 dark:hover:border-slate-800"
+                                    >
+                                      🔍 Filter
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            </th>
+                          );
+                        })}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-700 dark:text-slate-300">
-                      <tr>
-                        <td className="px-3 py-1.5">1</td>
-                        <td className="px-3 py-1.5">ada@example.com</td>
-                        <td className="px-3 py-1.5">Ada Lovelace</td>
-                        <td className="px-3 py-1.5">1</td>
-                        <td className="px-3 py-1.5">2020-01-04 08:22:10</td>
-                      </tr>
-                      <tr>
-                        <td className="px-3 py-1.5">2</td>
-                        <td className="px-3 py-1.5">linus@example.com</td>
-                        <td className="px-3 py-1.5">Linus Torvalds</td>
-                        <td className="px-3 py-1.5">1</td>
-                        <td className="px-3 py-1.5">2020-02-11 14:05:33</td>
-                      </tr>
-                      <tr>
-                        <td className="px-3 py-1.5">3</td>
-                        <td className="px-3 py-1.5">grace@example.com</td>
-                        <td className="px-3 py-1.5">Grace Hopper</td>
-                        <td className="px-3 py-1.5">0</td>
-                        <td className="px-3 py-1.5">2020-03-19 19:44:01</td>
-                      </tr>
+                      {rowsData?.rows.map((row, rIdx) => (
+                        <tr key={rIdx} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                          {row.map((val, cIdx) => {
+                            const colName = rowsData.columns[cIdx];
+                            const colType = schema?.columns.find(c => c.name === colName)?.type || '';
+                            const isBlob = colType.toLowerCase() === 'blob';
+
+                            if (isBlob && val !== null) {
+                              const bytesCount = typeof val === 'string' ? Math.ceil(val.length / 2) : 0;
+                              return (
+                                <td key={cIdx} className="px-3 py-1.5 relative group">
+                                  <span className="text-amber-600 dark:text-amber-400 cursor-help underline decoration-dotted">
+                                    BLOB ({bytesCount} bytes)
+                                  </span>
+                                  <div className="absolute left-3 bottom-full mb-1 hidden group-hover:block z-20 bg-slate-900 text-white text-xs font-mono rounded p-2 shadow-lg border border-slate-700 max-w-xs break-all">
+                                    Hex: {val.substring(0, 64)}
+                                    {val.length > 64 ? '...' : ''}
+                                  </div>
+                                </td>
+                              );
+                            }
+
+                            return (
+                              <td key={cIdx} className="px-3 py-1.5 whitespace-nowrap overflow-hidden max-w-xs text-ellipsis">
+                                {renderCell(val)}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))}
                     </tbody>
                   </table>
                 </div>
-                <div className="flex items-center justify-between text-sm text-slate-500">
-                  <span>Rows 1–3 of 1,240</span>
+
+                <div className="flex items-center justify-between text-sm text-slate-500 shrink-0">
+                  <span>
+                    Rows {totalRows === 0 ? 0 : (page - 1) * pageSize + 1}–
+                    {Math.min(page * pageSize, totalRows)} of {totalRows.toLocaleString()}
+                  </span>
                   <div className="flex items-center gap-1">
-                    <button className="px-2 py-1 rounded border border-slate-200 dark:border-slate-700">←</button>
-                    <span className="px-2">1 / 414</span>
-                    <button className="px-2 py-1 rounded border border-slate-200 dark:border-slate-700">→</button>
+                    <button
+                      onClick={() => setPage(p => Math.max(p - 1, 1))}
+                      disabled={page === 1}
+                      className="px-2 py-1 rounded border border-slate-200 dark:border-slate-700 disabled:opacity-50"
+                    >
+                      ←
+                    </button>
+                    <span className="px-2">
+                      {page} / {totalPages}
+                    </span>
+                    <button
+                      onClick={() => setPage(p => Math.min(p + 1, totalPages))}
+                      disabled={page === totalPages}
+                      className="px-2 py-1 rounded border border-slate-200 dark:border-slate-700 disabled:opacity-50"
+                    >
+                      →
+                    </button>
+                    <select
+                      value={pageSize}
+                      onChange={(e) => {
+                        setPageSize(Number(e.target.value));
+                        setPage(1);
+                      }}
+                      className="ml-2 bg-transparent border border-slate-200 dark:border-slate-700 rounded px-1 py-1 text-slate-700 dark:text-slate-300"
+                    >
+                      <option value={50}>50</option>
+                      <option value={100}>100</option>
+                      <option value={250}>250</option>
+                      <option value={500}>500</option>
+                    </select>
                   </div>
                 </div>
               </section>
             )}
 
             {/* SCHEMA PANEL */}
-            {activeTab === 'schema' && (
-              <section className="space-y-5">
+            {activeTab === 'schema' && schema && selectedTable && (
+              <section className="space-y-6">
                 <div>
                   <h3 className="font-semibold text-slate-900 dark:text-white mb-2">Columns</h3>
                   <div className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden bg-white dark:bg-slate-900">
@@ -291,23 +515,88 @@ export default function App() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-700 dark:text-slate-300">
-                        <tr>
-                          <td className="px-3 py-1.5">id</td>
-                          <td className="px-3 py-1.5 text-sky-500">INTEGER</td>
-                          <td className="px-3 py-1.5">NO</td>
-                          <td className="px-3 py-1.5 text-slate-400">—</td>
-                          <td className="px-3 py-1.5">🔑</td>
-                        </tr>
-                        <tr>
-                          <td className="px-3 py-1.5">email</td>
-                          <td className="px-3 py-1.5 text-sky-500">TEXT</td>
-                          <td className="px-3 py-1.5">NO</td>
-                          <td className="px-3 py-1.5 text-slate-400">—</td>
-                          <td className="px-3 py-1.5"></td>
-                        </tr>
+                        {schema.columns.map((col) => (
+                          <tr key={col.name}>
+                            <td className="px-3 py-1.5">{col.name}</td>
+                            <td className="px-3 py-1.5 text-sky-500">{col.type}</td>
+                            <td className="px-3 py-1.5">{col.notnull ? 'NO' : 'YES'}</td>
+                            <td className="px-3 py-1.5 text-slate-400">
+                              {col.defaultVal !== null ? col.defaultVal : '—'}
+                            </td>
+                            <td className="px-3 py-1.5">{col.pk > 0 ? `🔑 (${col.pk})` : ''}</td>
+                          </tr>
+                        ))}
                       </tbody>
                     </table>
                   </div>
+                </div>
+
+                <div className="grid md:grid-cols-2 gap-6">
+                  <div>
+                    <h3 className="font-semibold text-slate-900 dark:text-white mb-2">Indexes</h3>
+                    <div className="border border-slate-200 dark:border-slate-800 rounded-lg bg-white dark:bg-slate-900 p-3 space-y-2">
+                      {schema.indexes.length === 0 ? (
+                        <span className="text-sm text-slate-400 italic">none</span>
+                      ) : (
+                        schema.indexes.map((idx) => (
+                          <div key={idx.name} className="text-sm font-mono text-slate-700 dark:text-slate-300">
+                            <span className="font-semibold text-indigo-500">{idx.name}</span>{' '}
+                            <span className="text-slate-400">
+                              ({idx.columns.join(', ')}) {idx.unique && 'UNIQUE'}
+                            </span>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <h3 className="font-semibold text-slate-900 dark:text-white mb-2">Foreign keys</h3>
+                    <div className="border border-slate-200 dark:border-slate-800 rounded-lg bg-white dark:bg-slate-900 p-3 space-y-2">
+                      {schema.foreignKeys.length === 0 ? (
+                        <span className="text-sm text-slate-400 italic">none</span>
+                      ) : (
+                        schema.foreignKeys.map((fk, idx) => (
+                          <div key={idx} className="text-sm font-mono text-slate-700 dark:text-slate-300">
+                            <span className="text-indigo-500">{fk.from}</span> →{' '}
+                            <span className="font-semibold">{fk.table}</span>({fk.to})
+                            {fk.onDelete && <span className="text-red-500 text-xs ml-2">ON DELETE {fk.onDelete}</span>}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {schema.triggers.length > 0 && (
+                  <div>
+                    <h3 className="font-semibold text-slate-900 dark:text-white mb-2">Triggers</h3>
+                    <div className="border border-slate-200 dark:border-slate-800 rounded-lg bg-white dark:bg-slate-900 p-3 space-y-3">
+                      {schema.triggers.map((t) => (
+                        <div key={t.name} className="font-mono text-sm space-y-1">
+                          <div className="font-semibold text-indigo-500">{t.name}</div>
+                          <pre className="bg-slate-50 dark:bg-slate-950 p-2 rounded border border-slate-100 dark:border-slate-800 overflow-x-auto text-xs">
+                            {t.sql}
+                          </pre>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="font-semibold text-slate-900 dark:text-white">CREATE statement</h3>
+                    <button
+                      onClick={() => copyToClipboard(schema.ddl)}
+                      className="text-xs px-2.5 py-1 rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800"
+                    >
+                      Copy
+                    </button>
+                  </div>
+                  <pre className="font-mono text-xs bg-slate-900 text-slate-100 rounded-lg p-4 overflow-auto border border-slate-800">
+                    {schema.ddl}
+                  </pre>
                 </div>
               </section>
             )}
@@ -354,9 +643,11 @@ export default function App() {
             )}
 
             {/* SEED PANEL */}
-            {activeTab === 'seed' && (
+            {activeTab === 'seed' && selectedTable && (
               <section className="space-y-4">
-                <h3 className="font-semibold text-slate-900 dark:text-white">Seed users with fake data</h3>
+                <h3 className="font-semibold text-slate-900 dark:text-white">
+                  Seed {selectedTable.name} with fake data
+                </h3>
                 <div className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden bg-white dark:bg-slate-900 max-w-xl">
                   <table className="w-full text-sm">
                     <thead className="bg-slate-100 dark:bg-slate-800/60 text-slate-500 text-left">
@@ -366,14 +657,16 @@ export default function App() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-mono text-xs">
-                      <tr>
-                        <td className="px-3 py-2">email</td>
-                        <td className="px-3 py-2">
-                          <span className="px-2 py-0.5 rounded bg-indigo-105 dark:bg-indigo-500/20 text-indigo-600 dark:text-indigo-300">
-                            email
-                          </span>
-                        </td>
-                      </tr>
+                      {schema?.columns.map((col) => (
+                        <tr key={col.name}>
+                          <td className="px-3 py-2">{col.name}</td>
+                          <td className="px-3 py-2">
+                            <span className="px-2 py-0.5 rounded bg-indigo-50 dark:bg-indigo-500/20 text-indigo-600 dark:text-indigo-300">
+                              default
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
                     </tbody>
                   </table>
                 </div>
@@ -381,9 +674,9 @@ export default function App() {
             )}
 
             {/* EXPORT PANEL */}
-            {activeTab === 'export' && (
+            {activeTab === 'export' && selectedTable && (
               <section className="space-y-4">
-                <h3 className="font-semibold text-slate-900 dark:text-white">Export users</h3>
+                <h3 className="font-semibold text-slate-900 dark:text-white">Export {selectedTable.name}</h3>
                 <div className="grid sm:grid-cols-3 gap-3 max-w-xl">
                   <button className="p-4 rounded-lg border border-slate-200 dark:border-slate-800 hover:border-indigo-400 text-left">
                     <div className="text-2xl mb-1">📄</div>
@@ -417,7 +710,7 @@ export default function App() {
             {/* CODEGEN PANEL */}
             {activeTab === 'codegen' && (
               <section className="space-y-4">
-                <pre className="font-mono text-sm bg-slate-900 text-slate-100 rounded-lg p-4 overflow-x-auto">
+                <pre className="font-mono text-sm bg-slate-900 text-slate-100 rounded-lg p-4 overflow-x-auto border border-slate-800">
                   {`package main\n\ntype User struct {\n\tID    int64  \`json:"id"\`\n\tEmail string \`json:"email"\`\n}`}
                 </pre>
               </section>
