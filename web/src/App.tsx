@@ -1,4 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
+import { basicSetup } from 'codemirror';
+import { sql as sqlLanguage } from '@codemirror/lang-sql';
+import { EditorState, Compartment } from '@codemirror/state';
+import { EditorView, keymap } from '@codemirror/view';
 
 interface MetaData {
   name: string;
@@ -67,6 +71,165 @@ interface RowsData {
   total: number;
 }
 
+interface QueryResult {
+  columns: string[];
+  rows: any[][];
+  rowsAffected: number;
+  durationMs: number;
+  limit: number;
+  truncated: boolean;
+}
+
+interface QueryHistoryEntry {
+  sql: string;
+  ranAt: Date;
+  ok: boolean;
+  durationMs?: number;
+}
+
+const themeCompartment = new Compartment();
+
+const lightTheme = EditorView.theme({
+  "&": {
+    color: "#1e293b",
+    backgroundColor: "#ffffff",
+    height: "200px"
+  },
+  ".cm-content": {
+    caretColor: "#4f46e5",
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
+  },
+  ".cm-cursor, .cm-dropCursor": { borderLeftColor: "#4f46e5" },
+  "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection": { backgroundColor: "#e0e7ff" },
+  ".cm-gutters": {
+    backgroundColor: "#f8fafc",
+    color: "#94a3b8",
+    borderRight: "1px solid #e2e8f0"
+  }
+}, { dark: false });
+
+const darkTheme = EditorView.theme({
+  "&": {
+    color: "#f1f5f9",
+    backgroundColor: "#0f172a",
+    height: "200px"
+  },
+  ".cm-content": {
+    caretColor: "#818cf8",
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
+  },
+  ".cm-cursor, .cm-dropCursor": { borderLeftColor: "#818cf8" },
+  "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection": { backgroundColor: "#312e81" },
+  ".cm-gutters": {
+    backgroundColor: "#0b0f19",
+    color: "#475569",
+    borderRight: "1px solid #1e293b"
+  }
+}, { dark: true });
+
+interface SqlEditorProps {
+  value: string;
+  onChange: (val: string) => void;
+  onRun: (sql: string) => void;
+  theme: 'light' | 'dark';
+  editorViewRef: React.MutableRefObject<EditorView | null>;
+}
+
+function SqlEditor({ value, onChange, onRun, theme, editorViewRef }: SqlEditorProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const onRunRef = useRef(onRun);
+  const onChangeRef = useRef(onChange);
+
+  useEffect(() => {
+    onRunRef.current = onRun;
+  }, [onRun]);
+
+  useEffect(() => {
+    onChangeRef.current = onChange;
+  }, [onChange]);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+
+    const startState = EditorState.create({
+      doc: value,
+      extensions: [
+        basicSetup,
+        sqlLanguage(),
+        themeCompartment.of(theme === 'dark' ? darkTheme : lightTheme),
+        keymap.of([
+          {
+            key: "Mod-Enter",
+            run: () => {
+              const view = editorViewRef.current;
+              if (view) {
+                const selection = view.state.sliceDoc(
+                  view.state.selection.main.from,
+                  view.state.selection.main.to
+                );
+                const sqlToRun = selection || view.state.doc.toString();
+                onRunRef.current(sqlToRun);
+              }
+              return true;
+            }
+          }
+        ]),
+        EditorView.updateListener.of((update) => {
+          if (update.docChanged) {
+            onChangeRef.current(update.state.doc.toString());
+          }
+        })
+      ]
+    });
+
+    const view = new EditorView({
+      state: startState,
+      parent: containerRef.current
+    });
+
+    editorViewRef.current = view;
+
+    return () => {
+      view.destroy();
+      editorViewRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const view = editorViewRef.current;
+    if (view) {
+      view.dispatch({
+        effects: themeCompartment.reconfigure(theme === 'dark' ? darkTheme : lightTheme)
+      });
+    }
+  }, [theme]);
+
+  useEffect(() => {
+    const view = editorViewRef.current;
+    if (view && view.state.doc.toString() !== value) {
+      view.dispatch({
+        changes: { from: 0, to: view.state.doc.length, insert: value }
+      });
+    }
+  }, [value]);
+
+  return <div ref={containerRef} className="border border-slate-200 dark:border-slate-800 rounded-md overflow-hidden font-mono text-sm" />;
+}
+
+async function runQuery(sql: string, limit?: number): Promise<QueryResult> {
+  const res = await fetch('/api/query', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sql, limit }),
+  });
+  const body = await res.json();
+  if (!res.ok || !body.ok) {
+    const err = body.error || { code: 'HTTP_ERROR', message: `HTTP error ${res.status}` };
+    throw new Error(`${err.code}: ${err.message}`);
+  }
+  return body.data;
+}
+
 export default function App() {
   const [meta, setMeta] = useState<MetaData | null>(null);
   const [tables, setTables] = useState<TableInfo[]>([]);
@@ -93,6 +256,67 @@ export default function App() {
   const [dir, setDir] = useState<'asc' | 'desc' | ''>('');
   const [filters, setFilters] = useState<Record<string, string>>({});
   const [filterInputVisible, setFilterInputVisible] = useState<Record<string, boolean>>({});
+
+  // SQL Editor state
+  const [queryHistory, setQueryHistory] = useState<QueryHistoryEntry[]>([]);
+  const [sqlValue, setSqlValue] = useState<string>('SELECT * FROM sqlite_master LIMIT 10;');
+  const [queryResult, setQueryResult] = useState<QueryResult | null>(null);
+  const [queryError, setQueryError] = useState<{ code: string; message: string } | null>(null);
+  const [queryLoading, setQueryLoading] = useState<boolean>(false);
+  const editorViewRef = useRef<EditorView | null>(null);
+
+  const handleExecuteQuery = async (sqlToRun: string) => {
+    if (queryLoading || !sqlToRun.trim()) return;
+
+    setQueryLoading(true);
+    setQueryError(null);
+    setQueryResult(null);
+
+    try {
+      const data = await runQuery(sqlToRun);
+      setQueryResult(data);
+      setQueryHistory((prev) => [
+        {
+          sql: sqlToRun,
+          ranAt: new Date(),
+          ok: true,
+          durationMs: data.durationMs,
+        },
+        ...prev,
+      ]);
+    } catch (err: any) {
+      let code = 'SQL_ERROR';
+      let message = err.message;
+      const colonIdx = err.message.indexOf(':');
+      if (colonIdx !== -1) {
+        code = err.message.substring(0, colonIdx).trim();
+        message = err.message.substring(colonIdx + 1).trim();
+      }
+
+      setQueryError({ code, message });
+      setQueryHistory((prev) => [
+        {
+          sql: sqlToRun,
+          ranAt: new Date(),
+          ok: false,
+        },
+        ...prev,
+      ]);
+    } finally {
+      setQueryLoading(false);
+    }
+  };
+
+  const runQueryFromEditor = () => {
+    const view = editorViewRef.current;
+    if (!view) return;
+    const selection = view.state.sliceDoc(
+      view.state.selection.main.from,
+      view.state.selection.main.to
+    );
+    const sqlToRun = selection || view.state.doc.toString();
+    handleExecuteQuery(sqlToRun);
+  };
 
   useEffect(() => {
     if (theme === 'dark') {
@@ -684,19 +908,125 @@ export default function App() {
 
             {/* SQL PANEL */}
             {activeTab === 'sql' && (
-              <section className="space-y-4">
-                <div className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden">
-                  <div className="flex items-center justify-between px-3 py-2 bg-slate-100 dark:bg-slate-800/60 text-sm">
-                    <span className="text-slate-500">query.sql</span>
-                    <button className="px-3 py-1 rounded bg-indigo-600 text-white hover:bg-indigo-500 text-xs">
-                      Run ▸
-                    </button>
+              <section className="space-y-4 flex-1 flex flex-col min-h-0">
+                <div className="flex gap-4 flex-1 min-h-0">
+                  {/* Left: Editor and Results */}
+                  <div className="flex-1 flex flex-col min-h-0 gap-4">
+                    <div className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden bg-white dark:bg-slate-900 shrink-0">
+                      <div className="flex items-center justify-between px-3 py-2 bg-slate-100 dark:bg-slate-850 text-sm border-b border-slate-200 dark:border-slate-800">
+                        <span className="font-medium text-slate-700 dark:text-slate-300">query.sql</span>
+                        <button
+                          onClick={runQueryFromEditor}
+                          disabled={queryLoading}
+                          className="px-3 py-1.5 rounded-md bg-indigo-600 text-white hover:bg-indigo-500 disabled:bg-indigo-400 font-medium text-xs flex items-center gap-1.5 cursor-pointer disabled:cursor-not-allowed"
+                        >
+                          {queryLoading ? (
+                            <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white border-t-transparent"></span>
+                          ) : (
+                            <span>Run ▸</span>
+                          )}
+                          <span className="opacity-70 text-[10px]">⌘↵</span>
+                        </button>
+                      </div>
+                      <SqlEditor
+                        value={sqlValue}
+                        onChange={setSqlValue}
+                        onRun={handleExecuteQuery}
+                        theme={theme}
+                        editorViewRef={editorViewRef}
+                      />
+                    </div>
+
+                    {/* Error Banner */}
+                    {queryError && (
+                      <div className="rounded-lg border border-red-300 dark:border-red-500/30 bg-red-50 dark:bg-red-500/10 text-red-700 dark:text-red-400 text-sm px-4 py-3 shrink-0 flex flex-col gap-1">
+                        <div className="font-semibold">{queryError.code}</div>
+                        <div className="font-mono text-xs whitespace-pre-wrap">{queryError.message}</div>
+                      </div>
+                    )}
+
+                    {/* Results / Grid */}
+                    {queryResult && (
+                      <div className="flex-1 flex flex-col min-h-0 gap-2">
+                        {/* Status Bar */}
+                        <div className="flex items-center gap-3 text-xs text-slate-500 shrink-0">
+                          <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-450 font-medium">
+                            ● success
+                          </span>
+                          <span>{queryResult.durationMs.toFixed(1)} ms</span>
+                          {queryResult.rowsAffected > 0 ? (
+                            <span>{queryResult.rowsAffected} rows affected</span>
+                          ) : (
+                            <span>{queryResult.rows.length} rows</span>
+                          )}
+                          {queryResult.truncated && (
+                            <span className="text-amber-600 dark:text-amber-400 font-medium">
+                              (showing first {queryResult.limit} rows)
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Results Grid */}
+                        <div className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-auto bg-white dark:bg-slate-900 flex-1 min-h-0">
+                          <table className="w-full text-sm font-mono relative">
+                            <thead className="bg-slate-100 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400 text-left sticky top-0 z-10">
+                              <tr>
+                                {queryResult.columns.map((col) => (
+                                  <th key={col} className="px-3 py-2 font-medium border-b border-slate-200 dark:border-slate-800">
+                                    {col}
+                                  </th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-700 dark:text-slate-300">
+                              {queryResult.rows.map((row, rIdx) => (
+                                <tr key={rIdx} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                                  {row.map((val, cIdx) => (
+                                    <td key={cIdx} className="px-3 py-1.5 whitespace-nowrap overflow-hidden max-w-xs text-ellipsis">
+                                      {renderCell(val)}
+                                    </td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
                   </div>
-                  <pre className="font-mono text-sm p-4 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 overflow-x-auto">
-                    <span className="text-purple-500">SELECT</span> id, email, created_at{'\n'}
-                    <span className="text-purple-500">FROM</span> users{'\n'}
-                    <span className="text-purple-500">LIMIT</span> <span className="text-amber-500">10</span>;
-                  </pre>
+
+                  {/* Right: History Panel */}
+                  <div className="w-64 border border-slate-200 dark:border-slate-800 rounded-lg bg-white dark:bg-slate-900 p-3 flex flex-col min-h-0 shrink-0">
+                    <h3 className="text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2 shrink-0">
+                      Query History
+                    </h3>
+                    <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+                      {queryHistory.length === 0 ? (
+                        <div className="text-xs text-slate-400 italic">No queries run this session.</div>
+                      ) : (
+                        queryHistory.map((item, idx) => (
+                          <div
+                            key={idx}
+                            onClick={() => setSqlValue(item.sql)}
+                            className="p-2 rounded border border-slate-100 dark:border-slate-800 hover:border-indigo-500 dark:hover:border-indigo-500/50 hover:bg-slate-50 dark:hover:bg-slate-800/30 cursor-pointer flex flex-col gap-1 transition-all group"
+                          >
+                            <div className="text-xs font-mono line-clamp-2 text-slate-700 dark:text-slate-300 group-hover:text-indigo-650 dark:group-hover:text-indigo-400 break-all">
+                              {item.sql}
+                            </div>
+                            <div className="flex items-center justify-between text-[10px] text-slate-400">
+                              <span className="flex items-center gap-1">
+                                <span className={item.ok ? "text-emerald-500" : "text-red-500"}>
+                                  {item.ok ? "✓" : "✗"}
+                                </span>
+                                {item.durationMs !== undefined ? `${item.durationMs.toFixed(1)}ms` : ''}
+                              </span>
+                              <span>{item.ranAt.toLocaleTimeString()}</span>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
                 </div>
               </section>
             )}
