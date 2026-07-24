@@ -46,6 +46,15 @@ func (s *Server) setupRoutes() {
 		api.POST("/query", s.handleQuery)
 		api.GET("/tables/:name/export", s.handleTableExport)
 		api.POST("/export/query", s.handleQueryExport)
+
+		// Write-mode DDL & table editor endpoints
+		api.POST("/ddl", s.WriteGateMiddleware("executing DDL"), s.handlePostDDL)
+		api.POST("/tables", s.WriteGateMiddleware("creating table"), s.handleCreateTable)
+		api.PATCH("/tables/:name", s.WriteGateMiddleware("altering table"), s.handleAlterTable)
+		api.DELETE("/tables/:name", s.WriteGateMiddleware("dropping table"), s.handleDropTable)
+		api.POST("/tables/:name/rows", s.WriteGateMiddleware("inserting row"), s.handleInsertRow)
+		api.PATCH("/tables/:name/rows", s.WriteGateMiddleware("updating row"), s.handleUpdateRow)
+		api.DELETE("/tables/:name/rows", s.WriteGateMiddleware("deleting row"), s.handleDeleteRow)
 	}
 
 	// Embedded SPA serving

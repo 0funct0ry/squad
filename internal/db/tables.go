@@ -378,7 +378,11 @@ func BuildTableQuery(db *sql.DB, tableName string, params RowQueryParams) (strin
 	}
 
 	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM %s%s", quotedTable, wherePart)
-	selectQuery := fmt.Sprintf("SELECT * FROM %s%s", quotedTable, wherePart)
+	selectFields := "*"
+	if len(schema.PrimaryKey) == 0 && !schema.WithoutRowid {
+		selectFields = "rowid, *"
+	}
+	selectQuery := fmt.Sprintf("SELECT %s FROM %s%s", selectFields, quotedTable, wherePart)
 
 	// Ordering
 	if params.OrderBy != "" && columnMap[params.OrderBy] {

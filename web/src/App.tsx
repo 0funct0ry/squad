@@ -1,4 +1,20 @@
 import { useEffect, useState, useRef } from 'react';
+import {
+  Moon,
+  Sun,
+  Search,
+  Save,
+  X,
+  Edit2,
+  Trash2,
+  AlertTriangle,
+  FileSpreadsheet,
+  Braces,
+  Database,
+  RefreshCw,
+  Check,
+  AlertCircle
+} from 'lucide-react';
 import { basicSetup } from 'codemirror';
 import { sql as sqlLanguage } from '@codemirror/lang-sql';
 import { EditorState, Compartment } from '@codemirror/state';
@@ -256,6 +272,88 @@ async function exportQuery(sql: string, format: string): Promise<Blob> {
   return await res.blob();
 }
 
+async function createTable(data: any): Promise<any> {
+  const res = await fetch('/api/tables', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  const body = await res.json();
+  if (!res.ok || !body.ok) {
+    const err = body.error || { code: 'HTTP_ERROR', message: `HTTP error ${res.status}` };
+    throw new Error(`${err.code}: ${err.message}`);
+  }
+  return body.data;
+}
+
+async function alterTable(name: string, data: any): Promise<any> {
+  const res = await fetch(`/api/tables/${name}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  const body = await res.json();
+  if (!res.ok || !body.ok) {
+    const err = body.error || { code: 'HTTP_ERROR', message: `HTTP error ${res.status}` };
+    throw new Error(`${err.code}: ${err.message}`);
+  }
+  return body.data;
+}
+
+async function dropTable(name: string): Promise<any> {
+  const res = await fetch(`/api/tables/${name}`, {
+    method: 'DELETE',
+  });
+  const body = await res.json();
+  if (!res.ok || !body.ok) {
+    const err = body.error || { code: 'HTTP_ERROR', message: `HTTP error ${res.status}` };
+    throw new Error(`${err.code}: ${err.message}`);
+  }
+  return body.data;
+}
+
+async function insertRow(name: string, values: any): Promise<any> {
+  const res = await fetch(`/api/tables/${name}/rows`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ values }),
+  });
+  const body = await res.json();
+  if (!res.ok || !body.ok) {
+    const err = body.error || { code: 'HTTP_ERROR', message: `HTTP error ${res.status}` };
+    throw new Error(`${err.code}: ${err.message}`);
+  }
+  return body.data;
+}
+
+async function updateRow(name: string, key: any, values: any): Promise<any> {
+  const res = await fetch(`/api/tables/${name}/rows`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, values }),
+  });
+  const body = await res.json();
+  if (!res.ok || !body.ok) {
+    const err = body.error || { code: 'HTTP_ERROR', message: `HTTP error ${res.status}` };
+    throw new Error(`${err.code}: ${err.message}`);
+  }
+  return body.data;
+}
+
+async function deleteRow(name: string, key: any): Promise<any> {
+  const res = await fetch(`/api/tables/${name}/rows`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key }),
+  });
+  const body = await res.json();
+  if (!res.ok || !body.ok) {
+    const err = body.error || { code: 'HTTP_ERROR', message: `HTTP error ${res.status}` };
+    throw new Error(`${err.code}: ${err.message}`);
+  }
+  return body.data;
+}
+
 export default function App() {
   const [meta, setMeta] = useState<MetaData | null>(null);
   const [tables, setTables] = useState<TableInfo[]>([]);
@@ -273,8 +371,36 @@ export default function App() {
   });
 
   const [activeTab, setActiveTab] = useState<string>('data');
+  const [editorMode, setEditorMode] = useState<'create' | 'alter'>('create');
   const [searchQuery, setSearchQuery] = useState<string>('');
   
+  // Table Editor create states
+  const [newTableName, setNewTableName] = useState<string>('');
+  const [newTableColumns, setNewTableColumns] = useState<Array<{ name: string; type: string; pk: boolean; notnull: boolean; unique: boolean; defaultVal: string }>>([
+    { name: 'id', type: 'INTEGER', pk: true, notnull: false, unique: false, defaultVal: '' }
+  ]);
+  const [isCompositePk, setIsCompositePk] = useState<boolean>(false);
+  const [compositePkColumns, setCompositePkColumns] = useState<string[]>([]);
+  const [createTableError, setCreateTableError] = useState<string | null>(null);
+
+  // Table Editor alter states
+  const [newTableNameInput, setNewTableNameInput] = useState<string>('');
+  const [addColName, setAddColName] = useState<string>('');
+  const [addColType, setAddColType] = useState<string>('TEXT');
+  const [addColNotNull, setAddColNotNull] = useState<boolean>(false);
+  const [addColDefault, setAddColDefault] = useState<string>('');
+  const [renamingColumn, setRenamingColumn] = useState<Record<string, string>>({}); // originalName -> newName
+  const [allSchemas, setAllSchemas] = useState<Record<string, TableSchema>>({});
+
+  // Data grid inline CRUD states
+  const [inlineAddRow, setInlineAddRow] = useState<Record<string, any> | null>(null);
+  const [editingRowIndex, setEditingRowIndex] = useState<number | null>(null);
+  const [editingRowValues, setEditingRowValues] = useState<Record<string, any>>({});
+  const [refetchTrigger, setRefetchTrigger] = useState<number>(0);
+  const [deleteConfirmation, setDeleteConfirmation] = useState<{ row: any[]; rIdx: number } | null>(null);
+  const [dropColumnConfirmation, setDropColumnConfirmation] = useState<{ colName: string } | null>(null);
+  const [dropTableConfirmation, setDropTableConfirmation] = useState<boolean>(false);
+
   // Pagination & Sorting & Filtering states
   const [page, setPage] = useState<number>(1);
   const [pageSize, setPageSize] = useState<number>(100);
@@ -419,6 +545,323 @@ export default function App() {
     }
   };
 
+  const getFkReferencingTables = (tableName: string) => {
+    const referencing: string[] = [];
+    Object.entries(allSchemas).forEach(([otherTableName, schema]) => {
+      if (otherTableName === tableName) return;
+      schema.foreignKeys.forEach(fk => {
+        if (fk.table.toLowerCase() === tableName.toLowerCase()) {
+          referencing.push(otherTableName);
+        }
+      });
+    });
+    return referencing;
+  };
+
+  const handleCreateTableSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isWrite) return;
+    setCreateTableError(null);
+    try {
+      const columns = newTableColumns.map(col => ({
+        name: col.name,
+        type: col.type,
+        pk: isCompositePk ? false : col.pk,
+        notnull: col.notnull,
+        unique: col.unique,
+        default: col.defaultVal.trim() !== '' ? col.defaultVal.trim() : null
+      }));
+
+      const body: any = {
+        name: newTableName,
+        columns
+      };
+
+      if (isCompositePk) {
+        body.primaryKey = compositePkColumns;
+      }
+
+      await createTable(body);
+      setToast({ message: `Table "${newTableName}" created successfully!`, type: 'success' });
+      setTimeout(() => setToast(null), 3000);
+      
+      // Reset form
+      setNewTableName('');
+      setNewTableColumns([{ name: 'id', type: 'INTEGER', pk: true, notnull: false, unique: false, defaultVal: '' }]);
+      setIsCompositePk(false);
+      setCompositePkColumns([]);
+      
+      fetchMetaAndTables();
+      setSelectedTable({ name: newTableName, type: 'table', rowCount: 0 });
+      setActiveTab('data');
+    } catch (err: any) {
+      setCreateTableError(err.message || 'Failed to create table');
+    }
+  };
+
+  const handleRenameTableSubmit = async () => {
+    if (!selectedTable || !isWrite) return;
+    try {
+      await alterTable(selectedTable.name, {
+        op: 'rename_table',
+        newName: newTableNameInput
+      });
+      setToast({ message: `Table renamed to "${newTableNameInput}" successfully!`, type: 'success' });
+      setTimeout(() => setToast(null), 3000);
+      
+      fetchMetaAndTables();
+      setSelectedTable({ name: newTableNameInput, type: selectedTable.type, rowCount: selectedTable.rowCount });
+    } catch (err: any) {
+      setToast({ message: err.message || 'Failed to rename table', type: 'error' });
+      setTimeout(() => setToast(null), 5000);
+    }
+  };
+
+  const handleAddColumnSubmit = async () => {
+    if (!selectedTable || !isWrite) return;
+    try {
+      await alterTable(selectedTable.name, {
+        op: 'add_column',
+        column: {
+          name: addColName,
+          type: addColType,
+          notnull: addColNotNull,
+          default: addColDefault.trim() !== '' ? addColDefault.trim() : null
+        }
+      });
+      setToast({ message: `Column "${addColName}" added successfully!`, type: 'success' });
+      setTimeout(() => setToast(null), 3000);
+      setAddColName('');
+      setAddColType('TEXT');
+      setAddColNotNull(false);
+      setAddColDefault('');
+      
+      // Reload schema
+      const res = await fetch(`/api/tables/${selectedTable.name}/schema`);
+      const body = await res.json();
+      if (body.ok) setSchema(body.data);
+    } catch (err: any) {
+      setToast({ message: err.message || 'Failed to add column', type: 'error' });
+      setTimeout(() => setToast(null), 5000);
+    }
+  };
+
+  const handleRenameColumnSubmit = async (fromCol: string) => {
+    if (!selectedTable || !isWrite) return;
+    const toCol = renamingColumn[fromCol];
+    if (!toCol || toCol.trim() === '') return;
+    try {
+      await alterTable(selectedTable.name, {
+        op: 'rename_column',
+        from: fromCol,
+        to: toCol
+      });
+      setToast({ message: `Column renamed from "${fromCol}" to "${toCol}" successfully!`, type: 'success' });
+      setTimeout(() => setToast(null), 3000);
+      setRenamingColumn(prev => {
+        const copy = { ...prev };
+        delete copy[fromCol];
+        return copy;
+      });
+      
+      // Reload schema
+      const res = await fetch(`/api/tables/${selectedTable.name}/schema`);
+      const body = await res.json();
+      if (body.ok) setSchema(body.data);
+    } catch (err: any) {
+      setToast({ message: err.message || 'Failed to rename column', type: 'error' });
+      setTimeout(() => setToast(null), 5000);
+    }
+  };
+
+  const handleDropColumnClick = (colName: string) => {
+    if (!selectedTable || !isWrite) return;
+    setDropColumnConfirmation({ colName });
+  };
+
+  const executeDropColumn = async (colName: string) => {
+    if (!selectedTable || !isWrite) return;
+    try {
+      const data = await alterTable(selectedTable.name, {
+        op: 'drop_column',
+        column: colName
+      });
+      if (data.warnings && data.warnings.length > 0) {
+        setToast({ message: `Dropped column. Warning: ${data.warnings.join(', ')}`, type: 'success' });
+      } else {
+        setToast({ message: `Column "${colName}" dropped successfully!`, type: 'success' });
+      }
+      setTimeout(() => setToast(null), 5000);
+      
+      // Reload schema
+      const res = await fetch(`/api/tables/${selectedTable.name}/schema`);
+      const body = await res.json();
+      if (body.ok) setSchema(body.data);
+    } catch (err: any) {
+      setToast({ message: err.message || 'Failed to drop column', type: 'error' });
+      setTimeout(() => setToast(null), 5000);
+    }
+  };
+
+  const handleDropTableClick = () => {
+    if (!selectedTable || !isWrite) return;
+    setDropTableConfirmation(true);
+  };
+
+  const executeDropTable = async () => {
+    if (!selectedTable || !isWrite) return;
+    try {
+      await dropTable(selectedTable.name);
+      setToast({ message: `Table "${selectedTable.name}" dropped successfully!`, type: 'success' });
+      setTimeout(() => setToast(null), 3000);
+      
+      fetchMetaAndTables();
+      setSelectedTable(null);
+      setActiveTab('info');
+    } catch (err: any) {
+      setToast({ message: err.message || 'Failed to drop table', type: 'error' });
+      setTimeout(() => setToast(null), 5000);
+    }
+  };
+
+  const getRowKey = (row: any[]) => {
+    if (!schema || !rowsData) return {};
+    const key: Record<string, any> = {};
+    if (schema.primaryKey.length > 0) {
+      schema.primaryKey.forEach(pkCol => {
+        const idx = rowsData.columns.indexOf(pkCol);
+        if (idx !== -1) {
+          key[pkCol] = row[idx];
+        }
+      });
+    } else if (!schema.withoutRowid) {
+      const idx = rowsData.columns.indexOf('rowid');
+      if (idx !== -1) {
+        key['rowid'] = row[idx];
+      }
+    }
+    return key;
+  };
+
+  const handleAddRowClick = () => {
+    if (!isWrite || !schema) return;
+    const emptyRow: Record<string, any> = {};
+    schema.columns.forEach(col => {
+      if (col.defaultVal) {
+        let cleanDef = col.defaultVal;
+        if (cleanDef.startsWith("'") && cleanDef.endsWith("'")) {
+          cleanDef = cleanDef.slice(1, -1);
+        }
+        emptyRow[col.name] = cleanDef;
+      } else {
+        emptyRow[col.name] = '';
+      }
+    });
+    setInlineAddRow(emptyRow);
+  };
+
+  const handleSaveAddRow = async () => {
+    if (!selectedTable || !inlineAddRow || !isWrite) return;
+    try {
+      // Coerce numeric columns on client side
+      const values: Record<string, any> = {};
+      Object.entries(inlineAddRow).forEach(([col, val]) => {
+        if (col === 'rowid') return; // omit rowid
+        const colType = schema?.columns.find(c => c.name === col)?.type || '';
+        if (val === '' || val === null || val === undefined) {
+          values[col] = null;
+        } else if (['integer', 'real', 'numeric'].includes(colType.toLowerCase())) {
+          const num = Number(val);
+          values[col] = isNaN(num) ? val : num;
+        } else {
+          values[col] = val;
+        }
+      });
+
+      await insertRow(selectedTable.name, values);
+      setToast({ message: 'Row inserted successfully', type: 'success' });
+      setTimeout(() => setToast(null), 3000);
+      setInlineAddRow(null);
+      
+      // Reload rows
+      setPage(1);
+      setRefetchTrigger(prev => prev + 1);
+      fetchMetaAndTables(); // updates count in sidebar
+    } catch (err: any) {
+      setToast({ message: err.message || 'Failed to insert row', type: 'error' });
+      setTimeout(() => setToast(null), 5000);
+    }
+  };
+
+  const handleSaveEditRow = async (row: any[]) => {
+    if (!selectedTable || !isWrite) return;
+    try {
+      const key = getRowKey(row);
+      const values: Record<string, any> = {};
+      Object.entries(editingRowValues).forEach(([col, val]) => {
+        if (col === 'rowid') return; // omit rowid
+        const colType = schema?.columns.find(c => c.name === col)?.type || '';
+        if (val === '' || val === null || val === undefined) {
+          values[col] = null;
+        } else if (['integer', 'real', 'numeric'].includes(colType.toLowerCase())) {
+          const num = Number(val);
+          values[col] = isNaN(num) ? val : num;
+        } else {
+          values[col] = val;
+        }
+      });
+
+      await updateRow(selectedTable.name, key, values);
+      setToast({ message: 'Row updated successfully', type: 'success' });
+      setTimeout(() => setToast(null), 3000);
+      setEditingRowIndex(null);
+      setRefetchTrigger(prev => prev + 1);
+    } catch (err: any) {
+      setToast({ message: err.message || 'Failed to update row', type: 'error' });
+      setTimeout(() => setToast(null), 5000);
+    }
+  };
+
+  const handleDeleteRowClick = (row: any[], rIdx: number) => {
+    if (!selectedTable || !isWrite) return;
+    setDeleteConfirmation({ row, rIdx });
+  };
+
+  const executeDeleteRow = async (row: any[], rIdx: number) => {
+    if (!selectedTable || !isWrite) return;
+    const key = getRowKey(row);
+    
+    // Optimistic delete
+    const originalRows = rowsData ? [...rowsData.rows] : [];
+    const originalTotal = rowsData ? rowsData.total : 0;
+    if (rowsData) {
+      setRowsData({
+        ...rowsData,
+        rows: rowsData.rows.filter((_, i) => i !== rIdx),
+        total: rowsData.total - 1
+      });
+    }
+
+    try {
+      await deleteRow(selectedTable.name, key);
+      setToast({ message: 'Row deleted successfully', type: 'success' });
+      setTimeout(() => setToast(null), 3000);
+      setRefetchTrigger(prev => prev + 1);
+      fetchMetaAndTables(); // refresh sidebar count
+    } catch (err: any) {
+      // Revert on error
+      if (rowsData) {
+        setRowsData({
+          ...rowsData,
+          rows: originalRows,
+          total: originalTotal
+        });
+      }
+      setToast({ message: err.message || 'Failed to delete row', type: 'error' });
+      setTimeout(() => setToast(null), 5000);
+    }
+  };
+
   useEffect(() => {
     if (theme === 'dark') {
       document.documentElement.classList.add('dark');
@@ -441,6 +884,24 @@ export default function App() {
     }
   }, [activeTab]);
 
+  // Background fetch all schemas when in editor tab to inspect foreign keys
+  useEffect(() => {
+    if (activeTab === 'editor' && tables.length > 0) {
+      tables.forEach(t => {
+        if (!allSchemas[t.name]) {
+          fetch(`/api/tables/${t.name}/schema`)
+            .then(res => res.json())
+            .then(body => {
+              if (body.ok && body.data) {
+                setAllSchemas(prev => ({ ...prev, [t.name]: body.data }));
+              }
+            })
+            .catch(console.error);
+        }
+      });
+    }
+  }, [activeTab, tables, allSchemas]);
+
   // Fetch schema and reset rows parameters on table change
   useEffect(() => {
     if (!selectedTable) return;
@@ -452,6 +913,10 @@ export default function App() {
     setDir('');
     setFilters({});
     setFilterInputVisible({});
+    setEditorMode('alter');
+    setNewTableNameInput(selectedTable.name);
+    setInlineAddRow(null);
+    setEditingRowIndex(null);
 
     fetch(`/api/tables/${selectedTable.name}/schema`)
       .then(res => res.json())
@@ -495,7 +960,7 @@ export default function App() {
         }
       })
       .catch(console.error);
-  }, [selectedTable, page, pageSize, orderBy, dir, filters]);
+  }, [selectedTable, page, pageSize, orderBy, dir, filters, refetchTrigger]);
 
   const toggleTheme = () => {
     setTheme((prev) => (prev === 'light' ? 'dark' : 'light'));
@@ -597,7 +1062,8 @@ export default function App() {
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text).then(() => {
-      alert('Copied to clipboard!');
+      setToast({ message: 'Copied to clipboard!', type: 'success' });
+      setTimeout(() => setToast(null), 3000);
     });
   };
 
@@ -630,7 +1096,11 @@ export default function App() {
             className="w-8 h-8 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center transition-colors"
             title="Toggle theme"
           >
-            <span className="text-base">{theme === 'light' ? '🌙' : '☀️'}</span>
+            {theme === 'light' ? (
+              <Moon className="w-4 h-4 text-slate-500" />
+            ) : (
+              <Sun className="w-4 h-4 text-amber-400" />
+            )}
           </button>
         </div>
       </header>
@@ -714,8 +1184,9 @@ export default function App() {
                   </h2>
                   <div className="flex items-center gap-2 text-sm">
                     <button
+                      onClick={handleAddRowClick}
                       className={`px-2.5 py-1 rounded-md border border-slate-200 dark:border-slate-700 ${
-                        isWrite ? 'hover:bg-slate-100 dark:hover:bg-slate-850' : 'opacity-50 cursor-not-allowed'
+                        isWrite ? 'hover:bg-slate-100 dark:hover:bg-slate-850 cursor-pointer' : 'opacity-50 cursor-not-allowed'
                       }`}
                       title={isWrite ? 'Add new row' : 'Write mode required'}
                       disabled={!isWrite}
@@ -754,9 +1225,9 @@ export default function App() {
                                   ) : (
                                     <button
                                       onClick={() => setFilterInputVisible(prev => ({ ...prev, [col]: true }))}
-                                      className="text-[10px] text-slate-400 hover:text-indigo-500 font-normal px-1 rounded border border-transparent hover:border-slate-200 dark:hover:border-slate-800"
+                                      className="text-[10px] text-slate-400 hover:text-indigo-500 font-normal px-1 rounded border border-transparent hover:border-slate-200 dark:hover:border-slate-800 flex items-center gap-1"
                                     >
-                                      🔍 Filter
+                                      <Search className="w-2.5 h-2.5" /> Filter
                                     </button>
                                   )}
                                 </div>
@@ -764,38 +1235,156 @@ export default function App() {
                             </th>
                           );
                         })}
+                        {isWrite && (
+                          <th className="px-3 py-2 font-medium border-b border-slate-200 dark:border-slate-800 w-24 text-right">
+                            Actions
+                          </th>
+                        )}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-700 dark:text-slate-300">
-                      {rowsData?.rows.map((row, rIdx) => (
-                        <tr key={rIdx} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
-                          {row.map((val, cIdx) => {
-                            const colName = rowsData.columns[cIdx];
-                            const colType = schema?.columns.find(c => c.name === colName)?.type || '';
-                            const isBlob = colType.toLowerCase() === 'blob';
-
-                            if (isBlob && val !== null) {
-                              const bytesCount = typeof val === 'string' ? Math.ceil(val.length / 2) : 0;
-                              return (
-                                <td key={cIdx} className="px-3 py-1.5">
-                                  <button
-                                    onClick={() => setBlobModal({ column: colName, hex: String(val) })}
-                                    className="text-amber-600 dark:text-amber-400 underline decoration-dotted hover:text-amber-500 dark:hover:text-amber-300"
-                                  >
-                                    BLOB ({bytesCount} bytes)
-                                  </button>
-                                </td>
-                              );
-                            }
+                      {/* Inline Add Row */}
+                      {inlineAddRow && (
+                        <tr className="bg-indigo-50/20 dark:bg-indigo-950/10">
+                          {rowsData?.columns.map((col) => {
+                            const colType = schema?.columns.find(c => c.name === col)?.type || '';
+                            const isRowid = col === 'rowid';
+                            const isReadOnly = isRowid || schema?.columns.find(c => c.name === col)?.generated !== null;
+                            const isNumeric = ['integer', 'real', 'numeric'].includes(colType.toLowerCase());
 
                             return (
-                              <td key={cIdx} className="px-3 py-1.5 whitespace-nowrap overflow-hidden max-w-xs text-ellipsis">
-                                {renderCell(val)}
+                              <td key={col} className="px-3 py-1.5">
+                                <input
+                                  type={isNumeric ? "number" : "text"}
+                                  step="any"
+                                  disabled={isReadOnly}
+                                  value={inlineAddRow[col] ?? ''}
+                                  placeholder={isReadOnly ? '(auto)' : ''}
+                                  onChange={(e) => {
+                                    setInlineAddRow(prev => ({ ...prev!, [col]: e.target.value }));
+                                  }}
+                                  className="px-2 py-0.5 rounded border border-slate-300 dark:border-slate-750 bg-white dark:bg-slate-950 text-slate-900 dark:text-white font-mono text-xs w-full outline-none"
+                                />
                               </td>
                             );
                           })}
+                          <td className="px-3 py-1.5 space-x-2 text-right whitespace-nowrap">
+                            <button
+                              onClick={handleSaveAddRow}
+                              title="Save"
+                              className="text-emerald-600 dark:text-emerald-450 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 p-1.5 rounded transition-colors text-base cursor-pointer inline-flex items-center justify-center"
+                            >
+                              <Save className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => setInlineAddRow(null)}
+                              title="Cancel"
+                              className="text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-850 p-1.5 rounded transition-colors text-base cursor-pointer inline-flex items-center justify-center"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          </td>
                         </tr>
-                      ))}
+                      )}
+
+                      {rowsData?.rows.map((row, rIdx) => {
+                        const isEditing = editingRowIndex === rIdx;
+                        return (
+                          <tr key={rIdx} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                            {row.map((val, cIdx) => {
+                              const colName = rowsData.columns[cIdx];
+                              const colType = schema?.columns.find(c => c.name === colName)?.type || '';
+                              const isBlob = colType.toLowerCase() === 'blob';
+                              const isRowid = colName === 'rowid';
+                              const isReadOnly = isRowid || schema?.columns.find(c => c.name === colName)?.generated !== null;
+                              const isNumeric = ['integer', 'real', 'numeric'].includes(colType.toLowerCase());
+
+                              if (isEditing) {
+                                return (
+                                  <td key={cIdx} className="px-3 py-1.5">
+                                    <input
+                                      type={isNumeric ? "number" : "text"}
+                                      step="any"
+                                      disabled={isReadOnly}
+                                      value={editingRowValues[colName] ?? ''}
+                                      onChange={(e) => {
+                                        setEditingRowValues(prev => ({ ...prev, [colName]: e.target.value }));
+                                      }}
+                                      className="px-2 py-0.5 rounded border border-slate-300 dark:border-slate-750 bg-white dark:bg-slate-950 text-slate-900 dark:text-white font-mono text-xs w-full outline-none"
+                                    />
+                                  </td>
+                                );
+                              }
+
+                              if (isBlob && val !== null) {
+                                const bytesCount = typeof val === 'string' ? Math.ceil(val.length / 2) : 0;
+                                return (
+                                  <td key={cIdx} className="px-3 py-1.5">
+                                    <button
+                                      onClick={() => setBlobModal({ column: colName, hex: String(val) })}
+                                      className="text-amber-600 dark:text-amber-400 underline decoration-dotted hover:text-amber-500 dark:hover:text-amber-300"
+                                    >
+                                      BLOB ({bytesCount} bytes)
+                                    </button>
+                                  </td>
+                                );
+                              }
+
+                              return (
+                                <td key={cIdx} className="px-3 py-1.5 whitespace-nowrap overflow-hidden max-w-xs text-ellipsis">
+                                  {renderCell(val)}
+                                </td>
+                              );
+                            })}
+                            {isWrite && (
+                              <td className="px-3 py-1.5 space-x-2 text-right whitespace-nowrap">
+                                {isEditing ? (
+                                  <>
+                                    <button
+                                      onClick={() => handleSaveEditRow(row)}
+                                      title="Save"
+                                      className="text-emerald-600 dark:text-emerald-450 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 p-1.5 rounded transition-colors text-base cursor-pointer inline-flex items-center justify-center"
+                                    >
+                                      <Save className="w-4 h-4" />
+                                    </button>
+                                    <button
+                                      onClick={() => setEditingRowIndex(null)}
+                                      title="Cancel"
+                                      className="text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-850 p-1.5 rounded transition-colors text-base cursor-pointer inline-flex items-center justify-center"
+                                    >
+                                      <X className="w-4 h-4" />
+                                    </button>
+                                  </>
+                                ) : (
+                                  <>
+                                    <button
+                                      onClick={() => {
+                                        setEditingRowIndex(rIdx);
+                                        const vals: Record<string, any> = {};
+                                        rowsData.columns.forEach((c, i) => {
+                                          vals[c] = row[i];
+                                        });
+                                        setEditingRowValues(vals);
+                                      }}
+                                      title="Edit"
+                                      className="text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-500/10 p-1.5 rounded transition-colors text-base cursor-pointer inline-flex items-center justify-center"
+                                    >
+                                      <Edit2 className="w-4 h-4" />
+                                    </button>
+                                    <button
+                                      onClick={() => handleDeleteRowClick(row, rIdx)}
+                                      title="Delete"
+                                      className="text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 p-1.5 rounded transition-colors text-base cursor-pointer inline-flex items-center justify-center"
+                                    >
+                                      <Trash2 className="w-4 h-4" />
+                                    </button>
+                                  </>
+                                )}
+                              </td>
+                            )}
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -1142,25 +1731,448 @@ export default function App() {
 
             {/* TABLE EDITOR PANEL */}
             {activeTab === 'editor' && (
-              <section className="space-y-4">
+              <section className="space-y-6 max-w-4xl">
                 {!isWrite && (
                   <div className="rounded-lg border border-amber-300 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400 text-sm px-4 py-2.5">
                     Read-only mode — the table editor is disabled. Relaunch with <span className="font-mono">--write</span> to enable.
                   </div>
                 )}
-                <h3 className="font-semibold text-slate-900 dark:text-white">Create table</h3>
-                <div className="opacity-60 pointer-events-none space-y-3">
-                  <input
-                    value="new_table"
-                    disabled
-                    className="font-mono text-sm px-2.5 py-1.5 rounded-md bg-slate-100 dark:bg-slate-800"
-                  />
-                  <button className="px-3 py-1.5 rounded-md bg-indigo-600 text-white text-sm">
-                    + Add column
+
+                {/* Mode Switcher */}
+                <div className="flex items-center gap-2 border-b border-slate-200 dark:border-slate-800 pb-3">
+                  <button
+                    onClick={() => setEditorMode('create')}
+                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+                      editorMode === 'create'
+                        ? 'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-650 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/30'
+                        : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800'
+                    }`}
+                  >
+                    + Create New Table
                   </button>
+                  {selectedTable && (
+                    <button
+                      onClick={() => setEditorMode('alter')}
+                      className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+                        editorMode === 'alter'
+                          ? 'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-650 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/30'
+                          : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800'
+                      }`}
+                    >
+                      <span className="flex items-center gap-1">
+                        <Edit2 className="w-3.5 h-3.5" /> Alter Table "{selectedTable.name}"
+                      </span>
+                    </button>
+                  )}
                 </div>
+
+                {editorMode === 'create' ? (
+                  /* CREATE TABLE FORM */
+                  <form onSubmit={handleCreateTableSubmit} className={`space-y-4 ${!isWrite ? 'opacity-60 pointer-events-none' : ''}`}>
+                    <div className="flex flex-col gap-1 max-w-sm">
+                      <label className="text-xs font-semibold text-slate-500 dark:text-slate-400">Table Name</label>
+                      <input
+                        type="text"
+                        placeholder="users"
+                        required
+                        value={newTableName}
+                        onChange={(e) => setNewTableName(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
+                        className="font-mono text-sm px-3 py-2 rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-white outline-none focus:border-indigo-500"
+                      />
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        id="composite-pk-toggle"
+                        checked={isCompositePk}
+                        onChange={(e) => {
+                          setIsCompositePk(e.target.checked);
+                          if (!e.target.checked) setCompositePkColumns([]);
+                        }}
+                        className="rounded border-slate-300 dark:border-slate-700"
+                      />
+                      <label htmlFor="composite-pk-toggle" className="text-sm text-slate-650 dark:text-slate-300 cursor-pointer">
+                        Composite Primary Key Mode
+                      </label>
+                    </div>
+
+                    {isCompositePk && (
+                      <div className="p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/40 text-sm space-y-2">
+                        <div className="font-medium text-slate-700 dark:text-slate-300">Composite Primary Key Columns (in order):</div>
+                        <div className="flex flex-wrap gap-2">
+                          {newTableColumns.map(col => {
+                            if (!col.name.trim()) return null;
+                            const isSelected = compositePkColumns.includes(col.name);
+                            return (
+                              <button
+                                key={col.name}
+                                type="button"
+                                onClick={() => {
+                                  if (isSelected) {
+                                    setCompositePkColumns(prev => prev.filter(c => c !== col.name));
+                                  } else {
+                                    setCompositePkColumns(prev => [...prev, col.name]);
+                                  }
+                                }}
+                                className={`px-2.5 py-1 rounded text-xs font-mono border transition-all ${
+                                  isSelected
+                                    ? 'bg-indigo-600 text-white border-indigo-650'
+                                    : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400'
+                                }`}
+                              >
+                                {col.name} {isSelected && `(PK #${compositePkColumns.indexOf(col.name) + 1})`}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden bg-white dark:bg-slate-900 shadow-sm">
+                      <table className="w-full text-sm">
+                        <thead className="bg-slate-100 dark:bg-slate-800/60 text-slate-500 text-left">
+                          <tr>
+                            <th className="px-3 py-2 font-medium">Name</th>
+                            <th className="px-3 py-2 font-medium">Type</th>
+                            {!isCompositePk && <th className="px-3 py-2 font-medium text-center">PK</th>}
+                            <th className="px-3 py-2 font-medium text-center">Not Null</th>
+                            <th className="px-3 py-2 font-medium text-center">Unique</th>
+                            <th className="px-3 py-2 font-medium">Default Expr</th>
+                            <th className="px-3 py-2 text-center w-12"></th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-mono">
+                          {newTableColumns.map((col, idx) => (
+                            <tr key={idx}>
+                              <td className="px-3 py-1.5">
+                                <input
+                                  type="text"
+                                  placeholder="column_name"
+                                  required
+                                  value={col.name}
+                                  onChange={(e) => {
+                                    const updated = [...newTableColumns];
+                                    updated[idx].name = e.target.value.replace(/[^a-zA-Z0-9_]/g, '');
+                                    setNewTableColumns(updated);
+                                  }}
+                                  className="bg-transparent w-full outline-none border-b border-transparent focus:border-indigo-400 py-0.5 text-slate-900 dark:text-white"
+                                />
+                              </td>
+                              <td className="px-3 py-1.5">
+                                <input
+                                  type="text"
+                                  list="type-affinities"
+                                  required
+                                  value={col.type}
+                                  onChange={(e) => {
+                                    const updated = [...newTableColumns];
+                                    updated[idx].type = e.target.value.toUpperCase();
+                                    setNewTableColumns(updated);
+                                  }}
+                                  className="bg-transparent w-full outline-none border-b border-transparent focus:border-indigo-400 py-0.5 text-slate-900 dark:text-white"
+                                />
+                              </td>
+                              {!isCompositePk && (
+                                <td className="px-3 py-1.5 text-center">
+                                  <input
+                                    type="checkbox"
+                                    checked={col.pk}
+                                    onChange={(e) => {
+                                      const updated = newTableColumns.map((c, i) => ({
+                                        ...c,
+                                        pk: i === idx ? e.target.checked : false
+                                      }));
+                                      setNewTableColumns(updated);
+                                    }}
+                                  />
+                                </td>
+                              )}
+                              <td className="px-3 py-1.5 text-center">
+                                <input
+                                  type="checkbox"
+                                  checked={col.notnull}
+                                  onChange={(e) => {
+                                    const updated = [...newTableColumns];
+                                    updated[idx].notnull = e.target.checked;
+                                    setNewTableColumns(updated);
+                                  }}
+                                />
+                              </td>
+                              <td className="px-3 py-1.5 text-center">
+                                <input
+                                  type="checkbox"
+                                  checked={col.unique}
+                                  onChange={(e) => {
+                                    const updated = [...newTableColumns];
+                                    updated[idx].unique = e.target.checked;
+                                    setNewTableColumns(updated);
+                                  }}
+                                />
+                              </td>
+                              <td className="px-3 py-1.5">
+                                <input
+                                  type="text"
+                                  placeholder="NULL, 0, 'active'"
+                                  value={col.defaultVal}
+                                  onChange={(e) => {
+                                    const updated = [...newTableColumns];
+                                    updated[idx].defaultVal = e.target.value;
+                                    setNewTableColumns(updated);
+                                  }}
+                                  className="bg-transparent w-full outline-none border-b border-transparent focus:border-indigo-400 py-0.5 text-slate-900 dark:text-white text-xs"
+                                />
+                              </td>
+                              <td className="px-3 py-1.5 text-center">
+                                <button
+                                  type="button"
+                                  disabled={newTableColumns.length <= 1}
+                                  onClick={() => {
+                                    setNewTableColumns(prev => prev.filter((_, i) => i !== idx));
+                                  }}
+                                  className="text-red-500 hover:text-red-650 disabled:opacity-30 disabled:cursor-not-allowed font-sans"
+                                >
+                                  ✕
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setNewTableColumns(prev => [...prev, { name: '', type: 'TEXT', pk: false, notnull: false, unique: false, defaultVal: '' }]);
+                        }}
+                        className="px-3 py-1.5 rounded-md border border-slate-200 dark:border-slate-800 text-xs font-semibold hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+                      >
+                        + Add Column
+                      </button>
+
+                      <button
+                        type="submit"
+                        className="px-4 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold cursor-pointer shadow"
+                      >
+                        Create Table
+                      </button>
+                    </div>
+
+                    {createTableError && (
+                      <div className="p-3 text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20 rounded-md">
+                        {createTableError}
+                      </div>
+                    )}
+                  </form>
+                ) : (
+                  /* ALTER TABLE PANEL */
+                  selectedTable && (
+                    <div className={`space-y-6 ${!isWrite ? 'opacity-60 pointer-events-none' : ''}`}>
+                      
+                      {/* Rename Table Card */}
+                      <div className="p-4 rounded-xl border border-slate-205 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm space-y-3">
+                        <h4 className="text-sm font-semibold text-slate-900 dark:text-white">Rename Table</h4>
+                        <div className="flex items-center gap-3 max-w-md">
+                          <input
+                            type="text"
+                            value={newTableNameInput}
+                            onChange={(e) => setNewTableNameInput(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
+                            className="font-mono text-sm px-3 py-1.5 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white outline-none flex-1 focus:border-indigo-500"
+                          />
+                          <button
+                            onClick={handleRenameTableSubmit}
+                            disabled={newTableNameInput === selectedTable.name || !newTableNameInput.trim()}
+                            className="px-3 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer shadow"
+                          >
+                            Rename
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Add Column Card */}
+                      <div className="p-4 rounded-xl border border-slate-205 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm space-y-3">
+                        <h4 className="text-sm font-semibold text-slate-900 dark:text-white">Add Column</h4>
+                        <div className="grid sm:grid-cols-4 gap-3">
+                          <div className="flex flex-col gap-1">
+                            <label className="text-[10px] uppercase font-semibold text-slate-400">Name</label>
+                            <input
+                              type="text"
+                              value={addColName}
+                              onChange={(e) => setAddColName(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
+                              placeholder="new_col"
+                              className="font-mono text-sm px-3 py-1.5 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white outline-none"
+                            />
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <label className="text-[10px] uppercase font-semibold text-slate-400">Type</label>
+                            <input
+                              type="text"
+                              list="type-affinities"
+                              value={addColType}
+                              onChange={(e) => setAddColType(e.target.value.toUpperCase())}
+                              placeholder="TEXT"
+                              className="font-mono text-sm px-3 py-1.5 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white outline-none"
+                            />
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <label className="text-[10px] uppercase font-semibold text-slate-400">Default Value</label>
+                            <input
+                              type="text"
+                              value={addColDefault}
+                              onChange={(e) => setAddColDefault(e.target.value)}
+                              placeholder="e.g. 'active', 0"
+                              className="font-mono text-xs px-3 py-1.5 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white outline-none"
+                            />
+                          </div>
+                          <div className="flex items-center gap-2 pt-5">
+                            <input
+                              type="checkbox"
+                              id="add-col-notnull"
+                              checked={addColNotNull}
+                              onChange={(e) => setAddColNotNull(e.target.checked)}
+                              className="rounded border-slate-300 dark:border-slate-700"
+                            />
+                            <label htmlFor="add-col-notnull" className="text-xs text-slate-650 dark:text-slate-300 cursor-pointer">
+                              Not Null
+                            </label>
+                          </div>
+                        </div>
+                        <button
+                          onClick={handleAddColumnSubmit}
+                          disabled={!addColName.trim()}
+                          className="px-3 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer shadow mt-2"
+                        >
+                          Add Column
+                        </button>
+                      </div>
+
+                      {/* Columns Alter List */}
+                      <div className="p-4 rounded-xl border border-slate-205 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm space-y-3">
+                        <h4 className="text-sm font-semibold text-slate-900 dark:text-white">Existing Columns</h4>
+                        <div className="border border-slate-100 dark:border-slate-800 rounded-lg overflow-hidden">
+                          <table className="w-full text-sm">
+                            <thead className="bg-slate-50 dark:bg-slate-800/40 text-slate-500 text-left">
+                              <tr>
+                                <th className="px-3 py-2 font-medium">Name</th>
+                                <th className="px-3 py-2 font-medium">Type</th>
+                                <th className="px-3 py-2 font-medium">PK</th>
+                                <th className="px-3 py-2 font-medium">Not Null</th>
+                                <th className="px-3 py-2 font-medium">Default</th>
+                                <th className="px-3 py-2 text-right">Actions</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-mono text-xs text-slate-700 dark:text-slate-300">
+                              {schema?.columns.map(col => {
+                                const isRenaming = renamingColumn[col.name] !== undefined;
+                                return (
+                                  <tr key={col.name} className="hover:bg-slate-50 dark:hover:bg-slate-900/30">
+                                    <td className="px-3 py-2 font-semibold">
+                                      {isRenaming ? (
+                                        <input
+                                          type="text"
+                                          value={renamingColumn[col.name]}
+                                          onChange={(e) => {
+                                            const val = e.target.value.replace(/[^a-zA-Z0-9_]/g, '');
+                                            setRenamingColumn(prev => ({ ...prev, [col.name]: val }));
+                                          }}
+                                          className="px-2 py-0.5 rounded border border-slate-300 dark:border-slate-750 bg-white dark:bg-slate-950 text-slate-900 dark:text-white font-mono text-xs w-36 outline-none"
+                                        />
+                                      ) : (
+                                        col.name
+                                      )}
+                                    </td>
+                                    <td className="px-3 py-2 text-slate-500">{col.type}</td>
+                                    <td className="px-3 py-2">{col.pk > 0 ? `☑ (idx: ${col.pk})` : '☐'}</td>
+                                    <td className="px-3 py-2">{col.notnull ? '☑' : '☐'}</td>
+                                    <td className="px-3 py-2 text-slate-500">{col.defaultVal || '—'}</td>
+                                    <td className="px-3 py-2 text-right space-x-2 font-sans whitespace-nowrap">
+                                      {isRenaming ? (
+                                        <>
+                                          <button
+                                            onClick={() => handleRenameColumnSubmit(col.name)}
+                                            title="Save"
+                                            className="text-emerald-600 dark:text-emerald-450 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 p-1.5 rounded transition-colors inline-flex items-center justify-center cursor-pointer"
+                                          >
+                                            <Save className="w-4 h-4" />
+                                          </button>
+                                          <button
+                                            onClick={() => {
+                                              setRenamingColumn(prev => {
+                                                const copy = { ...prev };
+                                                delete copy[col.name];
+                                                return copy;
+                                              });
+                                            }}
+                                            title="Cancel"
+                                            className="text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-850 p-1.5 rounded transition-colors inline-flex items-center justify-center cursor-pointer"
+                                          >
+                                            <X className="w-4 h-4" />
+                                          </button>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <button
+                                            onClick={() => setRenamingColumn(prev => ({ ...prev, [col.name]: col.name }))}
+                                            title="Rename Column"
+                                            className="text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-500/10 p-1.5 rounded transition-colors inline-flex items-center justify-center cursor-pointer"
+                                          >
+                                            <Edit2 className="w-4 h-4" />
+                                          </button>
+                                          <button
+                                            onClick={() => handleDropColumnClick(col.name)}
+                                            disabled={schema.columns.length <= 1}
+                                            title="Drop Column"
+                                            className="text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 p-1.5 rounded transition-colors inline-flex items-center justify-center disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                                          >
+                                            <Trash2 className="w-4 h-4" />
+                                          </button>
+                                        </>
+                                      )}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+
+                      {/* Danger Zone */}
+                      <div className="p-4 rounded-xl border border-red-200 dark:border-red-900/30 bg-red-50/20 dark:bg-red-950/10 space-y-3">
+                        <h4 className="text-sm font-semibold text-red-600 dark:text-red-400">Danger Zone</h4>
+                        <p className="text-xs text-slate-400">
+                          Dropping a table is permanent and will delete all data inside it.
+                        </p>
+                        {getFkReferencingTables(selectedTable.name).length > 0 && (
+                          <div className="text-xs text-amber-600 dark:text-amber-400 font-medium flex items-center gap-1.5">
+                            <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
+                            <span>Warning: Other tables reference this table via foreign keys: {getFkReferencingTables(selectedTable.name).join(', ')}.</span>
+                          </div>
+                        )}
+                        <button
+                          onClick={handleDropTableClick}
+                          className="px-4 py-2 rounded-md bg-red-600 hover:bg-red-500 text-white text-xs font-semibold shadow cursor-pointer"
+                        >
+                          Drop Table
+                        </button>
+                      </div>
+
+                    </div>
+                  )
+                )}
               </section>
             )}
+
+            {/* Datalist for SQL Type Affinities */}
+            <datalist id="type-affinities">
+              <option value="INTEGER" />
+              <option value="TEXT" />
+              <option value="REAL" />
+              <option value="BLOB" />
+              <option value="NUMERIC" />
+            </datalist>
 
             {/* SEED PANEL */}
             {activeTab === 'seed' && selectedTable && (
@@ -1222,7 +2234,7 @@ export default function App() {
                         : 'border-slate-205 dark:border-slate-800 hover:border-indigo-400 dark:hover:border-indigo-500/50'
                     }`}
                   >
-                    <div className="text-2xl mb-1">📄</div>
+                    <FileSpreadsheet className="w-6 h-6 text-indigo-500 mb-1" />
                     <div className="font-medium text-slate-900 dark:text-white">CSV</div>
                     <div className="text-xs text-slate-400 mb-1">Comma-separated</div>
                     <div className="text-[10px] text-slate-500 italic mt-2 border-t border-slate-100 dark:border-slate-800/80 pt-1.5">
@@ -1251,7 +2263,7 @@ export default function App() {
                         : 'border-slate-205 dark:border-slate-800 hover:border-indigo-400 dark:hover:border-indigo-500/50'
                     }`}
                   >
-                    <div className="text-2xl mb-1">{`{ }`}</div>
+                    <Braces className="w-6 h-6 text-indigo-500 mb-1" />
                     <div className="font-medium text-slate-900 dark:text-white">JSON</div>
                     <div className="text-xs text-slate-400">Array of objects</div>
                   </button>
@@ -1280,7 +2292,7 @@ export default function App() {
                         : 'border-slate-205 dark:border-slate-800 hover:border-indigo-400 dark:hover:border-indigo-500/50'
                     }`}
                   >
-                    <div className="text-2xl mb-1">🗄️</div>
+                    <Database className="w-6 h-6 text-indigo-500 mb-1" />
                     <div className="font-medium text-slate-900 dark:text-white">SQL</div>
                     <div className="text-xs text-slate-400">INSERT statements</div>
                   </button>
@@ -1357,8 +2369,8 @@ export default function App() {
                     disabled={infoLoading}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-200 transition-all disabled:opacity-50"
                   >
-                    <span>🔄</span>
-                    {infoLoading ? 'Refreshing...' : 'Refresh'}
+                    <RefreshCw className={`w-3.5 h-3.5 ${infoLoading ? 'animate-spin' : ''}`} />
+                    <span>{infoLoading ? 'Refreshing...' : 'Refresh'}</span>
                   </button>
                 </div>
 
@@ -1559,10 +2571,167 @@ export default function App() {
       {toast && (
         <div className="fixed bottom-4 right-4 z-50 animate-bounce">
           <div className={`px-4 py-2.5 rounded-lg shadow-lg text-white font-medium text-sm flex items-center gap-2 ${
-            toast.type === 'error' ? 'bg-red-650' : 'bg-emerald-600'
+            toast.type === 'error' ? 'bg-red-600' : 'bg-emerald-600'
           }`}>
-            <span>{toast.type === 'error' ? '⚠️' : '✅'}</span>
+            {toast.type === 'error' ? (
+              <AlertCircle className="w-4 h-4 text-white shrink-0" />
+            ) : (
+              <Check className="w-4 h-4 text-white shrink-0" />
+            )}
             <span>{toast.message}</span>
+          </div>
+        </div>
+      )}
+
+      {/* DELETE CONFIRMATION MODAL */}
+      {deleteConfirmation && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setDeleteConfirmation(null)}
+        >
+          <div
+            className="w-full max-w-sm rounded-lg border border-slate-205 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+              <h3 className="font-semibold text-slate-900 dark:text-white flex items-center gap-1.5">
+                <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" /> Confirm Delete
+              </h3>
+              <button
+                onClick={() => setDeleteConfirmation(null)}
+                className="text-slate-400 hover:text-slate-500 dark:hover:text-slate-300"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="p-4 space-y-4">
+              <p className="text-sm text-slate-650 dark:text-slate-350 font-sans">
+                Are you sure you want to delete this row? This action is permanent and cannot be undone.
+              </p>
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={() => setDeleteConfirmation(null)}
+                  className="px-3 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-850 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    executeDeleteRow(deleteConfirmation.row, deleteConfirmation.rIdx);
+                    setDeleteConfirmation(null);
+                  }}
+                  className="px-3 py-1.5 rounded-md bg-red-600 hover:bg-red-500 text-white text-xs font-semibold shadow cursor-pointer"
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* DROP COLUMN CONFIRMATION MODAL */}
+      {dropColumnConfirmation && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setDropColumnConfirmation(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-lg border border-slate-205 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+              <h3 className="font-semibold text-slate-900 dark:text-white flex items-center gap-1.5">
+                <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" /> Confirm Drop Column
+              </h3>
+              <button
+                onClick={() => setDropColumnConfirmation(null)}
+                className="text-slate-400 hover:text-slate-500 dark:hover:text-slate-300"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="p-4 space-y-4">
+              <p className="text-sm text-slate-650 dark:text-slate-350 font-sans">
+                Are you sure you want to drop column <span className="font-semibold font-mono text-indigo-650 dark:text-indigo-400">"{dropColumnConfirmation.colName}"</span>?
+                This may require rebuilding the table and dropping indexes referencing it. This action cannot be undone.
+              </p>
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={() => setDropColumnConfirmation(null)}
+                  className="px-3 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-850 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    executeDropColumn(dropColumnConfirmation.colName);
+                    setDropColumnConfirmation(null);
+                  }}
+                  className="px-3 py-1.5 rounded-md bg-red-600 hover:bg-red-500 text-white text-xs font-semibold shadow cursor-pointer"
+                >
+                  Drop Column
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* DROP TABLE CONFIRMATION MODAL */}
+      {dropTableConfirmation && selectedTable && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setDropTableConfirmation(false)}
+        >
+          <div
+            className="w-full max-w-md rounded-lg border border-slate-205 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+              <h3 className="font-semibold text-slate-900 dark:text-white flex items-center gap-1.5">
+                <AlertTriangle className="w-4 h-4 text-red-500 shrink-0" /> Confirm Drop Table
+              </h3>
+              <button
+                onClick={() => setDropTableConfirmation(false)}
+                className="text-slate-400 hover:text-slate-500 dark:hover:text-slate-300"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="p-4 space-y-4">
+              <p className="text-sm text-slate-650 dark:text-slate-350 font-sans">
+                Are you sure you want to drop table <span className="font-semibold font-mono text-red-650 dark:text-red-400">"{selectedTable.name}"</span>?
+                This action is permanent and all data will be lost.
+              </p>
+              {getFkReferencingTables(selectedTable.name).length > 0 && (
+                <div className="p-3 rounded border border-amber-250 dark:border-amber-500/30 bg-amber-50/50 dark:bg-amber-500/10 text-xs text-amber-800 dark:text-amber-400 font-sans flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-semibold">⚠️ WARNING:</span> The following tables reference this table via foreign keys:
+                    <div className="font-semibold mt-1 font-mono text-[11px]">{getFkReferencingTables(selectedTable.name).join(', ')}</div>
+                    Dropping it will cause FK violations or failures.
+                  </div>
+                </div>
+              )}
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={() => setDropTableConfirmation(false)}
+                  className="px-3 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-850 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    executeDropTable();
+                    setDropTableConfirmation(false);
+                  }}
+                  className="px-3 py-1.5 rounded-md bg-red-600 hover:bg-red-500 text-white text-xs font-semibold shadow cursor-pointer"
+                >
+                  Drop Table
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
