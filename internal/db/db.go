@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	_ "modernc.org/sqlite"
@@ -68,4 +69,96 @@ func Meta(db *sql.DB, path string) (sqliteVersion string, sizeBytes int64, err e
 	}
 
 	return sqliteVersion, info.Size(), nil
+}
+
+type DBMeta struct {
+	Name          string `json:"name"`
+	Path          string `json:"path"`
+	Mode          string `json:"mode"`
+	SqliteVersion string `json:"sqliteVersion"`
+	SizeBytes     int64  `json:"sizeBytes"`
+	PageSize      int64  `json:"pageSize"`
+	PageCount     int64  `json:"pageCount"`
+	Encoding      string `json:"encoding"`
+	JournalMode   string `json:"journalMode"`
+	TableCount    int    `json:"tableCount"`
+	ViewCount     int    `json:"viewCount"`
+}
+
+// GetDBMeta fetches extended file- and pragma-level metadata for the database.
+func GetDBMeta(db *sql.DB, dbPath string, write bool) (*DBMeta, error) {
+	sqliteVer, size, err := Meta(db, dbPath)
+	if err != nil {
+		return nil, err
+	}
+
+	name := dbPath
+	if dbPath != ":memory:" && !strings.HasPrefix(dbPath, "file:") {
+		name = filepath.Base(dbPath)
+	}
+
+	mode := "ro"
+	if write {
+		mode = "rw"
+	}
+
+	var pageSize int64
+	if err := db.QueryRow("PRAGMA page_size").Scan(&pageSize); err != nil {
+		return nil, fmt.Errorf("failed to query page size: %w", err)
+	}
+
+	var pageCount int64
+	if err := db.QueryRow("PRAGMA page_count").Scan(&pageCount); err != nil {
+		return nil, fmt.Errorf("failed to query page count: %w", err)
+	}
+
+	var encoding string
+	if err := db.QueryRow("PRAGMA encoding").Scan(&encoding); err != nil {
+		return nil, fmt.Errorf("failed to query encoding: %w", err)
+	}
+
+	var journalMode string
+	if err := db.QueryRow("PRAGMA journal_mode").Scan(&journalMode); err != nil {
+		return nil, fmt.Errorf("failed to query journal mode: %w", err)
+	}
+	journalMode = strings.ToLower(journalMode)
+
+	var tableCount, viewCount int
+	rows, err := db.Query(`
+		SELECT type, COUNT(*) 
+		FROM sqlite_master 
+		WHERE (type = 'table' OR type = 'view') AND name NOT LIKE 'sqlite_%' 
+		GROUP BY type
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query table and view counts: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var ttype string
+		var count int
+		if err := rows.Scan(&ttype, &count); err != nil {
+			return nil, fmt.Errorf("failed to scan type count: %w", err)
+		}
+		if ttype == "table" {
+			tableCount = count
+		} else if ttype == "view" {
+			viewCount = count
+		}
+	}
+
+	return &DBMeta{
+		Name:          name,
+		Path:          dbPath,
+		Mode:          mode,
+		SqliteVersion: sqliteVer,
+		SizeBytes:     size,
+		PageSize:      pageSize,
+		PageCount:     pageCount,
+		Encoding:      encoding,
+		JournalMode:   journalMode,
+		TableCount:    tableCount,
+		ViewCount:     viewCount,
+	}, nil
 }

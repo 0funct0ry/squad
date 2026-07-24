@@ -6,9 +6,16 @@ import { EditorView, keymap } from '@codemirror/view';
 
 interface MetaData {
   name: string;
+  path: string;
   mode: 'ro' | 'rw';
   sqliteVersion: string;
   sizeBytes: number;
+  pageSize: number;
+  pageCount: number;
+  encoding: string;
+  journalMode: string;
+  tableCount: number;
+  viewCount: number;
 }
 
 interface TableInfo {
@@ -257,6 +264,49 @@ export default function App() {
   const [filters, setFilters] = useState<Record<string, string>>({});
   const [filterInputVisible, setFilterInputVisible] = useState<Record<string, boolean>>({});
 
+  // Info Tab State
+  const [infoLoading, setInfoLoading] = useState<boolean>(false);
+  const [infoError, setInfoError] = useState<string | null>(null);
+  const [infoSortBy, setInfoSortBy] = useState<'name' | 'rowCount'>('name');
+  const [infoSortDir, setInfoSortDir] = useState<'asc' | 'desc'>('asc');
+  const [toast, setToast] = useState<{ message: string; type: 'error' | 'success' } | null>(null);
+
+  const fetchMetaAndTables = () => {
+    setInfoLoading(true);
+    setInfoError(null);
+    Promise.all([
+      fetch('/api/meta').then(res => res.json()),
+      fetch('/api/tables').then(res => res.json())
+    ])
+      .then(([metaBody, tablesBody]) => {
+        if (metaBody.ok && metaBody.data) {
+          setMeta(metaBody.data);
+        } else {
+          throw new Error(metaBody.error?.message || 'Failed to fetch database metadata');
+        }
+
+        if (tablesBody.ok && tablesBody.data) {
+          setTables(tablesBody.data);
+          if (!selectedTable && tablesBody.data.length > 0) {
+            setSelectedTable(tablesBody.data[0]);
+          }
+        } else {
+          throw new Error(tablesBody.error?.message || 'Failed to fetch database tables');
+        }
+      })
+      .catch((err) => {
+        console.error(err);
+        setInfoError(err.message || 'Failed to fetch database info');
+        setError(err.message || 'Failed to fetch database info');
+        setToast({ message: err.message || 'Failed to fetch database info', type: 'error' });
+        setTimeout(() => setToast(null), 5000);
+      })
+      .finally(() => {
+        setInfoLoading(false);
+        setLoading(false);
+      });
+  };
+
   // SQL Editor state
   const [queryHistory, setQueryHistory] = useState<QueryHistoryEntry[]>([]);
   const [sqlValue, setSqlValue] = useState<string>('SELECT * FROM sqlite_master LIMIT 10;');
@@ -330,34 +380,15 @@ export default function App() {
 
   // Fetch Meta & Tables
   useEffect(() => {
-    Promise.all([
-      fetch('/api/meta').then(res => res.json()),
-      fetch('/api/tables').then(res => res.json())
-    ])
-      .then(([metaBody, tablesBody]) => {
-        if (metaBody.ok && metaBody.data) {
-          setMeta(metaBody.data);
-        } else {
-          throw new Error(metaBody.error?.message || 'Failed to fetch database metadata');
-        }
-
-        if (tablesBody.ok && tablesBody.data) {
-          setTables(tablesBody.data);
-          if (tablesBody.data.length > 0) {
-            setSelectedTable(tablesBody.data[0]);
-          }
-        } else {
-          throw new Error(tablesBody.error?.message || 'Failed to fetch database tables');
-        }
-      })
-      .catch((err) => {
-        console.error(err);
-        setError(err.message);
-      })
-      .finally(() => {
-        setLoading(false);
-      });
+    fetchMetaAndTables();
   }, []);
+
+  // Refetch when entering Info tab
+  useEffect(() => {
+    if (activeTab === 'info') {
+      fetchMetaAndTables();
+    }
+  }, [activeTab]);
 
   // Fetch schema and reset rows parameters on table change
   useEffect(() => {
@@ -1129,26 +1160,184 @@ export default function App() {
 
             {/* INFO PANEL */}
             {activeTab === 'info' && (
-              <section className="max-w-xl space-y-4">
-                <h3 className="font-semibold text-slate-900 dark:text-white">Database info</h3>
-                <dl className="text-sm font-mono border border-slate-200 dark:border-slate-800 rounded-lg divide-y divide-slate-100 dark:divide-slate-800 bg-white dark:bg-slate-900">
-                  <div className="flex justify-between px-4 py-2">
-                    <dt className="text-slate-400">Path</dt>
-                    <dd>{meta?.name}</dd>
+              <section className="space-y-6 max-w-4xl pb-10">
+                {infoError && (
+                  <div className="rounded-lg border border-red-300 dark:border-red-950/40 bg-red-50 dark:bg-red-950/15 text-red-700 dark:text-red-400 text-sm px-4 py-3 flex items-center justify-between shrink-0">
+                    <span className="font-medium">Error: {infoError}</span>
+                    <button
+                      onClick={fetchMetaAndTables}
+                      className="px-2 py-1 text-xs font-semibold rounded bg-red-100 dark:bg-red-900/30 hover:bg-red-200"
+                    >
+                      Retry
+                    </button>
                   </div>
-                  <div className="flex justify-between px-4 py-2">
-                    <dt className="text-slate-400">Size on disk</dt>
-                    <dd>{dbSize}</dd>
+                )}
+
+                <div className="flex items-center justify-between">
+                  <h2 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white">Database Information</h2>
+                  <button
+                    onClick={fetchMetaAndTables}
+                    disabled={infoLoading}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-200 transition-all disabled:opacity-50"
+                  >
+                    <span>🔄</span>
+                    {infoLoading ? 'Refreshing...' : 'Refresh'}
+                  </button>
+                </div>
+
+                {infoLoading && !meta ? (
+                  // Skeleton state
+                  <div className="space-y-6 animate-pulse">
+                    <div className="h-28 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl"></div>
+                    <div className="grid md:grid-cols-2 gap-4">
+                      <div className="h-44 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl"></div>
+                      <div className="h-44 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl"></div>
+                    </div>
                   </div>
-                  <div className="flex justify-between px-4 py-2">
-                    <dt className="text-slate-400">SQLite version</dt>
-                    <dd>{sqliteVer}</dd>
-                  </div>
-                  <div className="flex justify-between px-4 py-2">
-                    <dt className="text-slate-400">Mode</dt>
-                    <dd>{isWrite ? 'read-write' : 'read-only'}</dd>
-                  </div>
-                </dl>
+                ) : (
+                  <>
+                    {/* Database file section */}
+                    <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 shadow-sm space-y-4">
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 dark:text-slate-550">Database</h3>
+                      <div className="grid sm:grid-cols-2 md:grid-cols-4 gap-4">
+                        <div className="sm:col-span-2 space-y-1">
+                          <span className="text-xs text-slate-400 dark:text-slate-500">File Path</span>
+                          <div className="group relative">
+                            <div className="font-mono text-xs text-slate-750 dark:text-slate-250 bg-slate-50 dark:bg-slate-950 p-2 rounded-lg border border-slate-100 dark:border-slate-850 truncate max-w-full" title={meta?.path}>
+                              {meta?.path || ':memory:'}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="space-y-1">
+                          <span className="text-xs text-slate-400 dark:text-slate-500">On-Disk Size</span>
+                          <div className="font-semibold text-slate-900 dark:text-white text-base">
+                            {meta ? formatBytes(meta.sizeBytes) : '0 B'}
+                          </div>
+                        </div>
+                        <div className="space-y-1">
+                          <span className="text-xs text-slate-400 dark:text-slate-500">SQLite Version</span>
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-semibold text-slate-900 dark:text-white text-base">{meta?.sqliteVersion || 'unknown'}</span>
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold uppercase ${
+                              meta?.mode === 'rw' 
+                                ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400' 
+                                : 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400'
+                            }`}>
+                              {meta?.mode === 'rw' ? 'RW' : 'RO'}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Storage Section */}
+                    <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 shadow-sm space-y-4">
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 dark:text-slate-550">Storage & Engine</h3>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                        <div className="space-y-0.5">
+                          <span className="text-xs text-slate-400 dark:text-slate-500">Page Size</span>
+                          <div className="font-semibold text-slate-950 dark:text-white">{meta ? `${meta.pageSize.toLocaleString()} bytes` : '—'}</div>
+                        </div>
+                        <div className="space-y-0.5">
+                          <span className="text-xs text-slate-400 dark:text-slate-500">Page Count</span>
+                          <div className="font-semibold text-slate-950 dark:text-white">{meta?.pageCount.toLocaleString() ?? '—'}</div>
+                        </div>
+                        <div className="space-y-0.5">
+                          <span className="text-xs text-slate-400 dark:text-slate-500">Encoding</span>
+                          <div className="font-semibold text-slate-950 dark:text-white">{meta?.encoding || '—'}</div>
+                        </div>
+                        <div className="space-y-0.5">
+                          <span className="text-xs text-slate-400 dark:text-slate-500">Journal Mode</span>
+                          <div className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-indigo-50 dark:bg-indigo-500/10 text-indigo-650 dark:text-indigo-400 uppercase">
+                            {meta?.journalMode || '—'}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Objects section */}
+                    <div className="space-y-4">
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 dark:text-slate-550">Objects</h3>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 shadow-sm flex items-center justify-between">
+                          <div>
+                            <span className="text-xs text-slate-400 dark:text-slate-500">Tables</span>
+                            <div className="text-2xl font-bold text-slate-900 dark:text-white mt-1">{meta?.tableCount ?? 0}</div>
+                          </div>
+                          <span className="text-2xl opacity-60">▤</span>
+                        </div>
+                        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 shadow-sm flex items-center justify-between">
+                          <div>
+                            <span className="text-xs text-slate-400 dark:text-slate-500">Views</span>
+                            <div className="text-2xl font-bold text-slate-900 dark:text-white mt-1">{meta?.viewCount ?? 0}</div>
+                          </div>
+                          <span className="text-2xl opacity-60">◫</span>
+                        </div>
+                      </div>
+
+                      {/* Tables and Row counts list */}
+                      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-sm overflow-hidden flex flex-col max-h-[300px]">
+                        <div className="overflow-y-auto">
+                          <table className="w-full text-sm font-mono relative border-collapse">
+                            <thead className="bg-slate-50 dark:bg-slate-800/40 text-slate-400 dark:text-slate-500 text-left sticky top-0 border-b border-slate-105 dark:border-slate-850 z-10">
+                              <tr>
+                                <th 
+                                  onClick={() => {
+                                    setInfoSortDir(prev => infoSortBy === 'name' ? (prev === 'asc' ? 'desc' : 'asc') : 'asc');
+                                    setInfoSortBy('name');
+                                  }}
+                                  className="px-4 py-2 font-medium cursor-pointer select-none hover:text-indigo-500"
+                                >
+                                  Table Name {infoSortBy === 'name' ? (infoSortDir === 'asc' ? '▲' : '▼') : '↕'}
+                                </th>
+                                <th 
+                                  onClick={() => {
+                                    setInfoSortDir(prev => infoSortBy === 'rowCount' ? (prev === 'asc' ? 'desc' : 'asc') : 'desc');
+                                    setInfoSortBy('rowCount');
+                                  }}
+                                  className="px-4 py-2 font-medium text-right cursor-pointer select-none hover:text-indigo-500"
+                                >
+                                  Row Count {infoSortBy === 'rowCount' ? (infoSortDir === 'asc' ? '▲' : '▼') : '↕'}
+                                </th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-700 dark:text-slate-350">
+                              {tables.filter(t => t.type === 'table').length === 0 ? (
+                                <tr>
+                                  <td colSpan={2} className="px-4 py-8 text-center text-slate-450 dark:text-slate-500 italic">No tables</td>
+                                </tr>
+                              ) : (
+                                [...tables]
+                                  .filter(t => t.type === 'table')
+                                  .sort((a, b) => {
+                                    const factor = infoSortDir === 'asc' ? 1 : -1;
+                                    if (infoSortBy === 'name') {
+                                      return a.name.localeCompare(b.name) * factor;
+                                    } else {
+                                      return (a.rowCount - b.rowCount) * factor;
+                                    }
+                                  })
+                                  .map((t) => (
+                                    <tr 
+                                      key={t.name} 
+                                      onClick={() => {
+                                        setSelectedTable(t);
+                                        setActiveTab('data');
+                                      }}
+                                      className="hover:bg-slate-50 dark:hover:bg-slate-800/40 cursor-pointer"
+                                    >
+                                      <td className="px-4 py-2 font-medium text-slate-900 dark:text-slate-205">{t.name}</td>
+                                      <td className="px-4 py-2 text-right text-slate-500">{t.rowCount.toLocaleString()}</td>
+                                    </tr>
+                                  ))
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                )}
               </section>
             )}
           </div>
@@ -1185,6 +1374,18 @@ export default function App() {
                 {Math.ceil(blobModal.hex.length / 2).toLocaleString()} bytes
               </p>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* TOAST SYSTEM */}
+      {toast && (
+        <div className="fixed bottom-4 right-4 z-50 animate-bounce">
+          <div className={`px-4 py-2.5 rounded-lg shadow-lg text-white font-medium text-sm flex items-center gap-2 ${
+            toast.type === 'error' ? 'bg-red-650' : 'bg-emerald-600'
+          }`}>
+            <span>{toast.type === 'error' ? '⚠️' : '✅'}</span>
+            <span>{toast.message}</span>
           </div>
         </div>
       )}

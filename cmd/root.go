@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/0funct0ry/squad/internal/db"
@@ -39,6 +41,12 @@ var rootCmd = &cobra.Command{
 	Args:    cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		dbPath := args[0]
+		resolvedPath := dbPath
+		if dbPath != ":memory:" && !strings.HasPrefix(dbPath, "file:") {
+			if abs, err := filepath.Abs(dbPath); err == nil {
+				resolvedPath = abs
+			}
+		}
 
 		// Determine if database should be opened in read-only mode.
 		// Read-only mode is active if Write is false.
@@ -50,10 +58,10 @@ var rootCmd = &cobra.Command{
 		if cfg.Write {
 			modeStr = "write"
 		}
-		fmt.Printf("  database : %s  (%s)\n", dbPath, modeStr)
+		fmt.Printf("  database : %s  (%s)\n", resolvedPath, modeStr)
 
 		// Open the database
-		database, err := db.OpenDB(dbPath, readOnly)
+		database, err := db.OpenDB(resolvedPath, readOnly)
 		if err != nil {
 			fmt.Printf("Error: failed to open database: %v\n", err)
 			os.Exit(1)
@@ -61,7 +69,7 @@ var rootCmd = &cobra.Command{
 		defer database.Close()
 
 		// Start the server
-		srv := server.NewServer(database, dbPath, cfg.Write)
+		srv := server.NewServer(database, resolvedPath, cfg.Write)
 		addr := fmt.Sprintf("%s:%d", cfg.Addr, cfg.Port)
 		fmt.Printf("  address  : http://%s\n", addr)
 		fmt.Println("  press Ctrl+C to stop")

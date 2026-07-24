@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io/fs"
 	"net/http"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -100,7 +99,7 @@ func (s *Server) setupRoutes() {
 }
 
 func (s *Server) handleMeta(c *gin.Context) {
-	sqliteVer, size, err := db.Meta(s.db, s.dbPath)
+	meta, err := db.GetDBMeta(s.db, s.dbPath, s.write)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"ok":    false,
@@ -109,24 +108,9 @@ func (s *Server) handleMeta(c *gin.Context) {
 		return
 	}
 
-	name := filepath.Base(s.dbPath)
-	if s.dbPath == ":memory:" {
-		name = ":memory:"
-	}
-
-	mode := "ro"
-	if s.write {
-		mode = "rw"
-	}
-
 	c.JSON(http.StatusOK, gin.H{
-		"ok": true,
-		"data": gin.H{
-			"name":          name,
-			"mode":          mode,
-			"sqliteVersion": sqliteVer,
-			"sizeBytes":     size,
-		},
+		"ok":   true,
+		"data": meta,
 	})
 }
 
