@@ -44,6 +44,8 @@ func (s *Server) setupRoutes() {
 		api.GET("/tables/:name/schema", s.handleTableSchema)
 		api.GET("/tables/:name/rows", s.handleTableRows)
 		api.POST("/query", s.handleQuery)
+		api.GET("/tables/:name/export", s.handleTableExport)
+		api.POST("/export/query", s.handleQueryExport)
 	}
 
 	// Embedded SPA serving

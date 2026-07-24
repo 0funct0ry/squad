@@ -237,6 +237,25 @@ async function runQuery(sql: string, limit?: number): Promise<QueryResult> {
   return body.data;
 }
 
+async function exportQuery(sql: string, format: string): Promise<Blob> {
+  const res = await fetch(`/api/export/query?format=${format}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sql }),
+  });
+  if (!res.ok) {
+    let errBody;
+    try {
+      errBody = await res.json();
+    } catch {
+      throw new Error(`HTTP_ERROR: HTTP error ${res.status}`);
+    }
+    const err = errBody.error || { code: 'HTTP_ERROR', message: `HTTP error ${res.status}` };
+    throw new Error(`${err.code}: ${err.message}`);
+  }
+  return await res.blob();
+}
+
 export default function App() {
   const [meta, setMeta] = useState<MetaData | null>(null);
   const [tables, setTables] = useState<TableInfo[]>([]);
@@ -270,6 +289,13 @@ export default function App() {
   const [infoSortBy, setInfoSortBy] = useState<'name' | 'rowCount'>('name');
   const [infoSortDir, setInfoSortDir] = useState<'asc' | 'desc'>('asc');
   const [toast, setToast] = useState<{ message: string; type: 'error' | 'success' } | null>(null);
+
+  // Export States
+  const [applyFilterSort, setApplyFilterSort] = useState<boolean>(false);
+  const [includeSchema, setIncludeSchema] = useState<boolean>(false);
+  const [selectedExportFormat, setSelectedExportFormat] = useState<'csv' | 'json' | 'sql'>('csv');
+  const [exportQueryLoading, setExportQueryLoading] = useState<boolean>(false);
+  const [lastExecutedSql, setLastExecutedSql] = useState<string>('');
 
   const fetchMetaAndTables = () => {
     setInfoLoading(true);
@@ -325,6 +351,7 @@ export default function App() {
     try {
       const data = await runQuery(sqlToRun);
       setQueryResult(data);
+      setLastExecutedSql(sqlToRun);
       setQueryHistory((prev) => [
         {
           sql: sqlToRun,
@@ -366,6 +393,30 @@ export default function App() {
     );
     const sqlToRun = selection || view.state.doc.toString();
     handleExecuteQuery(sqlToRun);
+  };
+
+  const handleQueryExport = async (format: 'csv' | 'json') => {
+    if (!lastExecutedSql) return;
+    setExportQueryLoading(true);
+    try {
+      const blob = await exportQuery(lastExecutedSql, format);
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `query-export.${format}`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+      setToast({ message: 'Query exported successfully', type: 'success' });
+      setTimeout(() => setToast(null), 3000);
+    } catch (err: any) {
+      console.error(err);
+      setToast({ message: err.message || 'Failed to export query result', type: 'error' });
+      setTimeout(() => setToast(null), 5000);
+    } finally {
+      setExportQueryLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -980,20 +1031,47 @@ export default function App() {
                     {queryResult && (
                       <div className="flex-1 flex flex-col min-h-0 gap-2">
                         {/* Status Bar */}
-                        <div className="flex items-center gap-3 text-xs text-slate-500 shrink-0">
-                          <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-450 font-medium">
-                            ● success
-                          </span>
-                          <span>{queryResult.durationMs.toFixed(1)} ms</span>
-                          {queryResult.rowsAffected > 0 ? (
-                            <span>{queryResult.rowsAffected} rows affected</span>
-                          ) : (
-                            <span>{queryResult.rows.length} rows</span>
-                          )}
-                          {queryResult.truncated && (
-                            <span className="text-amber-600 dark:text-amber-400 font-medium">
-                              (showing first {queryResult.limit} rows)
+                        <div className="flex items-center justify-between text-xs text-slate-500 shrink-0">
+                          <div className="flex items-center gap-3">
+                            <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-455 font-medium">
+                              ● success
                             </span>
+                            <span>{queryResult.durationMs.toFixed(1)} ms</span>
+                            {queryResult.rowsAffected > 0 ? (
+                              <span>{queryResult.rowsAffected} rows affected</span>
+                            ) : (
+                              <span>{queryResult.rows.length} rows</span>
+                            )}
+                            {queryResult.truncated && (
+                              <span className="text-amber-600 dark:text-amber-400 font-medium">
+                                (showing first {queryResult.limit} rows)
+                              </span>
+                            )}
+                          </div>
+                          {queryResult.columns.length > 0 && (
+                            <div className="flex items-center gap-2">
+                              <span className="text-slate-400 dark:text-slate-500">Export:</span>
+                              <button
+                                disabled={exportQueryLoading}
+                                onClick={() => handleQueryExport('csv')}
+                                className="px-2 py-0.5 rounded border border-slate-205 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 text-[11px] font-medium transition-colors cursor-pointer flex items-center gap-1"
+                              >
+                                {exportQueryLoading ? (
+                                  <span className="h-2.5 w-2.5 animate-spin rounded-full border border-slate-500 border-t-transparent"></span>
+                                ) : null}
+                                <span>CSV</span>
+                              </button>
+                              <button
+                                disabled={exportQueryLoading}
+                                onClick={() => handleQueryExport('json')}
+                                className="px-2 py-0.5 rounded border border-slate-205 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 text-[11px] font-medium transition-colors cursor-pointer flex items-center gap-1"
+                              >
+                                {exportQueryLoading ? (
+                                  <span className="h-2.5 w-2.5 animate-spin rounded-full border border-slate-500 border-t-transparent"></span>
+                                ) : null}
+                                <span>JSON</span>
+                              </button>
+                            </div>
                           )}
                         </div>
 
@@ -1118,23 +1196,122 @@ export default function App() {
             {/* EXPORT PANEL */}
             {activeTab === 'export' && selectedTable && (
               <section className="space-y-4">
-                <h3 className="font-semibold text-slate-900 dark:text-white">Export {selectedTable.name}</h3>
-                <div className="grid sm:grid-cols-3 gap-3 max-w-xl">
-                  <button className="p-4 rounded-lg border border-slate-200 dark:border-slate-800 hover:border-indigo-400 text-left">
+                <h3 className="font-semibold text-slate-900 dark:text-white">
+                  Export <span className="font-mono text-indigo-650 dark:text-indigo-400">{selectedTable.name}</span>
+                </h3>
+                
+                <div className="grid sm:grid-cols-3 gap-3 max-w-2xl">
+                  {/* CSV Card */}
+                  <button
+                    onClick={() => {
+                      setSelectedExportFormat('csv');
+                      let url = `/api/tables/${encodeURIComponent(selectedTable.name)}/export?format=csv`;
+                      if (applyFilterSort && (orderBy || Object.values(filters).some(v => v !== ''))) {
+                        url += `&filtered=true`;
+                        if (orderBy) url += `&orderBy=${encodeURIComponent(orderBy)}`;
+                        if (dir) url += `&dir=${encodeURIComponent(dir)}`;
+                        Object.entries(filters).forEach(([col, val]) => {
+                          if (val !== '') url += `&filter[${encodeURIComponent(col)}]=${encodeURIComponent(val)}`;
+                        });
+                      }
+                      window.location.href = url;
+                    }}
+                    className={`p-4 rounded-lg border text-left transition-all cursor-pointer ${
+                      selectedExportFormat === 'csv'
+                        ? 'border-indigo-600 dark:border-indigo-500 bg-indigo-50/30 dark:bg-indigo-950/20 shadow-sm font-medium'
+                        : 'border-slate-205 dark:border-slate-800 hover:border-indigo-400 dark:hover:border-indigo-500/50'
+                    }`}
+                  >
                     <div className="text-2xl mb-1">📄</div>
-                    <div className="font-medium">CSV</div>
-                    <div className="text-xs text-slate-400">Comma-separated</div>
+                    <div className="font-medium text-slate-900 dark:text-white">CSV</div>
+                    <div className="text-xs text-slate-400 mb-1">Comma-separated</div>
+                    <div className="text-[10px] text-slate-500 italic mt-2 border-t border-slate-100 dark:border-slate-800/80 pt-1.5">
+                      NULL values export as empty fields.
+                    </div>
                   </button>
-                  <button className="p-4 rounded-lg border border-slate-200 dark:border-slate-800 hover:border-indigo-400 text-left">
+
+                  {/* JSON Card */}
+                  <button
+                    onClick={() => {
+                      setSelectedExportFormat('json');
+                      let url = `/api/tables/${encodeURIComponent(selectedTable.name)}/export?format=json`;
+                      if (applyFilterSort && (orderBy || Object.values(filters).some(v => v !== ''))) {
+                        url += `&filtered=true`;
+                        if (orderBy) url += `&orderBy=${encodeURIComponent(orderBy)}`;
+                        if (dir) url += `&dir=${encodeURIComponent(dir)}`;
+                        Object.entries(filters).forEach(([col, val]) => {
+                          if (val !== '') url += `&filter[${encodeURIComponent(col)}]=${encodeURIComponent(val)}`;
+                        });
+                      }
+                      window.location.href = url;
+                    }}
+                    className={`p-4 rounded-lg border text-left transition-all cursor-pointer ${
+                      selectedExportFormat === 'json'
+                        ? 'border-indigo-600 dark:border-indigo-500 bg-indigo-50/30 dark:bg-indigo-950/20 shadow-sm font-medium'
+                        : 'border-slate-205 dark:border-slate-800 hover:border-indigo-400 dark:hover:border-indigo-500/50'
+                    }`}
+                  >
                     <div className="text-2xl mb-1">{`{ }`}</div>
-                    <div className="font-medium">JSON</div>
+                    <div className="font-medium text-slate-900 dark:text-white">JSON</div>
                     <div className="text-xs text-slate-400">Array of objects</div>
                   </button>
-                  <button className="p-4 rounded-lg border border-slate-200 dark:border-slate-800 hover:border-indigo-400 text-left">
+
+                  {/* SQL Card */}
+                  <button
+                    onClick={() => {
+                      setSelectedExportFormat('sql');
+                      let url = `/api/tables/${encodeURIComponent(selectedTable.name)}/export?format=sql`;
+                      if (applyFilterSort && (orderBy || Object.values(filters).some(v => v !== ''))) {
+                        url += `&filtered=true`;
+                        if (orderBy) url += `&orderBy=${encodeURIComponent(orderBy)}`;
+                        if (dir) url += `&dir=${encodeURIComponent(dir)}`;
+                        Object.entries(filters).forEach(([col, val]) => {
+                          if (val !== '') url += `&filter[${encodeURIComponent(col)}]=${encodeURIComponent(val)}`;
+                        });
+                      }
+                      if (includeSchema) {
+                        url += `&includeSchema=true`;
+                      }
+                      window.location.href = url;
+                    }}
+                    className={`p-4 rounded-lg border text-left transition-all cursor-pointer ${
+                      selectedExportFormat === 'sql'
+                        ? 'border-indigo-600 dark:border-indigo-500 bg-indigo-50/30 dark:bg-indigo-950/20 shadow-sm font-medium'
+                        : 'border-slate-205 dark:border-slate-800 hover:border-indigo-400 dark:hover:border-indigo-500/50'
+                    }`}
+                  >
                     <div className="text-2xl mb-1">🗄️</div>
-                    <div className="font-medium">SQL</div>
+                    <div className="font-medium text-slate-900 dark:text-white">SQL</div>
                     <div className="text-xs text-slate-400">INSERT statements</div>
                   </button>
+                </div>
+
+                {/* Toggles */}
+                <div className="flex flex-col sm:flex-row sm:items-center gap-4 text-sm mt-4 text-slate-500 dark:text-slate-400 border-t border-slate-100 dark:border-slate-800/80 pt-4">
+                  {/* Apply Filter/Sort Toggle */}
+                  {(orderBy || Object.values(filters).some(v => v !== '')) ? (
+                    <label className="flex items-center gap-2 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={applyFilterSort}
+                        onChange={(e) => setApplyFilterSort(e.target.checked)}
+                        className="rounded border-slate-300 dark:border-slate-700 text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <span>Apply current filter/sort</span>
+                    </label>
+                  ) : null}
+
+                  {/* Include Schema DDL Toggle */}
+                  <label className={`flex items-center gap-2 select-none ${selectedExportFormat === 'sql' ? 'cursor-pointer opacity-100' : 'opacity-40 cursor-not-allowed'}`}>
+                    <input
+                      type="checkbox"
+                      disabled={selectedExportFormat !== 'sql'}
+                      checked={selectedExportFormat === 'sql' && includeSchema}
+                      onChange={(e) => setIncludeSchema(e.target.checked)}
+                      className="rounded border-slate-300 dark:border-slate-700 text-indigo-600 focus:ring-indigo-500"
+                    />
+                    <span>Include CREATE TABLE statement</span>
+                  </label>
                 </div>
               </section>
             )}

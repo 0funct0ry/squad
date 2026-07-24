@@ -340,20 +340,18 @@ func GetTableSchema(db *sql.DB, tableName string) (*TableSchema, error) {
 	}, nil
 }
 
-// GetTableRows returns a page of rows with optional sorting and filtering.
-func GetTableRows(db *sql.DB, tableName string, params RowQueryParams) (*RowResult, error) {
+// BuildTableQuery constructs the SQL query, count query, and arguments for a table based on filtering and sorting parameters, WITHOUT limit/offset.
+func BuildTableQuery(db *sql.DB, tableName string, params RowQueryParams) (string, string, []interface{}, *TableSchema, error) {
 	quotedTable := QuoteIdentifier(tableName)
 
 	// Validate orderby is one of the columns to prevent SQL injection
 	schema, err := GetTableSchema(db, tableName)
 	if err != nil {
-		return nil, err
+		return "", "", nil, nil, err
 	}
 
-	columnsList := make([]string, len(schema.Columns))
 	columnMap := make(map[string]bool)
-	for i, col := range schema.Columns {
-		columnsList[i] = col.Name
+	for _, col := range schema.Columns {
 		columnMap[col.Name] = true
 	}
 
@@ -379,15 +377,7 @@ func GetTableRows(db *sql.DB, tableName string, params RowQueryParams) (*RowResu
 		}
 	}
 
-	// Total count matching filters
-	var total int64
 	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM %s%s", quotedTable, wherePart)
-	err = db.QueryRow(countQuery, args...).Scan(&total)
-	if err != nil {
-		return nil, fmt.Errorf("failed to count rows: %w", err)
-	}
-
-	// Select rows query
 	selectQuery := fmt.Sprintf("SELECT * FROM %s%s", quotedTable, wherePart)
 
 	// Ordering
@@ -399,11 +389,29 @@ func GetTableRows(db *sql.DB, tableName string, params RowQueryParams) (*RowResu
 		selectQuery += fmt.Sprintf(" ORDER BY %s %s", QuoteIdentifier(params.OrderBy), dir)
 	}
 
+	return selectQuery, countQuery, args, schema, nil
+}
+
+// GetTableRows returns a page of rows with optional sorting and filtering.
+func GetTableRows(db *sql.DB, tableName string, params RowQueryParams) (*RowResult, error) {
+	selectQuery, countQuery, args, schema, err := BuildTableQuery(db, tableName, params)
+	if err != nil {
+		return nil, err
+	}
+
+	// Total count matching filters
+	var total int64
+	err = db.QueryRow(countQuery, args...).Scan(&total)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count rows: %w", err)
+	}
+
 	// Limit and Offset
 	selectQuery += " LIMIT ? OFFSET ?"
-	args = append(args, params.Limit, params.Offset)
+	queryArgs := append([]interface{}{}, args...)
+	queryArgs = append(queryArgs, params.Limit, params.Offset)
 
-	rows, err := db.Query(selectQuery, args...)
+	rows, err := db.Query(selectQuery, queryArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query rows: %w", err)
 	}
