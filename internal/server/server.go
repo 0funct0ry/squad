@@ -55,6 +55,8 @@ func (s *Server) setupRoutes() {
 		api.POST("/tables/:name/rows", s.WriteGateMiddleware("inserting row"), s.handleInsertRow)
 		api.PATCH("/tables/:name/rows", s.WriteGateMiddleware("updating row"), s.handleUpdateRow)
 		api.DELETE("/tables/:name/rows", s.WriteGateMiddleware("deleting row"), s.handleDeleteRow)
+		api.GET("/tables/:name/seed/plan", s.WriteGateMiddleware("seeding table"), s.handleSeedPlan)
+		api.POST("/tables/:name/seed", s.WriteGateMiddleware("seeding table"), s.handleSeedTable)
 	}
 
 	// Embedded SPA serving

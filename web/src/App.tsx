@@ -94,6 +94,26 @@ interface RowsData {
   total: number;
 }
 
+interface SeedColumnPlan {
+  name: string;
+  type: string;
+  skip: boolean;
+  reason: string | null;
+  generator: string | null;
+  options: Record<string, any> | null;
+  uniqueGroup?: string[];
+}
+
+interface SeedPlan {
+  columns: SeedColumnPlan[];
+  availableGenerators: string[];
+}
+
+interface SeedColumnSelection {
+  generator: string;
+  options: Record<string, any>;
+}
+
 interface QueryResult {
   columns: string[];
   rows: any[][];
@@ -354,6 +374,33 @@ async function deleteRow(name: string, key: any): Promise<any> {
   return body.data;
 }
 
+async function getSeedPlan(name: string): Promise<SeedPlan> {
+  const res = await fetch(`/api/tables/${name}/seed/plan`);
+  const body = await res.json();
+  if (!res.ok || !body.ok) {
+    const err = body.error || { code: 'HTTP_ERROR', message: `HTTP error ${res.status}` };
+    throw new Error(`${err.code}: ${err.message}`);
+  }
+  return body.data;
+}
+
+async function seedTable(
+  name: string,
+  opts: { count: number; dryRun: boolean; columns: Record<string, { generator: string; options?: Record<string, any> }> }
+): Promise<{ inserted: number } | { rows: Record<string, any>[] }> {
+  const res = await fetch(`/api/tables/${name}/seed`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(opts),
+  });
+  const body = await res.json();
+  if (!res.ok || !body.ok) {
+    const err = body.error || { code: 'HTTP_ERROR', message: `HTTP error ${res.status}` };
+    throw new Error(`${err.code}: ${err.message}`);
+  }
+  return body.data;
+}
+
 export default function App() {
   const [meta, setMeta] = useState<MetaData | null>(null);
   const [tables, setTables] = useState<TableInfo[]>([]);
@@ -415,6 +462,18 @@ export default function App() {
   const [infoSortBy, setInfoSortBy] = useState<'name' | 'rowCount'>('name');
   const [infoSortDir, setInfoSortDir] = useState<'asc' | 'desc'>('asc');
   const [toast, setToast] = useState<{ message: string; type: 'error' | 'success' } | null>(null);
+
+  // Seed states
+  const [seedPlan, setSeedPlan] = useState<SeedPlan | null>(null);
+  const [seedPlanLoading, setSeedPlanLoading] = useState<boolean>(false);
+  const [seedPlanError, setSeedPlanError] = useState<string | null>(null);
+  const [seedSelections, setSeedSelections] = useState<Record<string, SeedColumnSelection>>({});
+  const [seedOverrides, setSeedOverrides] = useState<Record<string, boolean>>({});
+  const [seedCount, setSeedCount] = useState<number>(1000);
+  const [seedPreviewRows, setSeedPreviewRows] = useState<Record<string, any>[] | null>(null);
+  const [seedPreviewLoading, setSeedPreviewLoading] = useState<boolean>(false);
+  const [seedInsertLoading, setSeedInsertLoading] = useState<boolean>(false);
+  const [seedError, setSeedError] = useState<string | null>(null);
 
   // Export States
   const [applyFilterSort, setApplyFilterSort] = useState<boolean>(false);
@@ -724,6 +783,92 @@ export default function App() {
     }
   };
 
+  const defaultGeneratorForType = (type: string): string => {
+    const t = type.toUpperCase();
+    if (t.includes('INT')) return 'int';
+    if (t.includes('CHAR') || t.includes('CLOB') || t.includes('TEXT')) return 'uuid';
+    if (t.includes('BLOB')) return 'bytes';
+    return 'float';
+  };
+
+  const toggleSeedOverride = (col: SeedColumnPlan) => {
+    setSeedOverrides((prev) => ({ ...prev, [col.name]: !prev[col.name] }));
+    setSeedSelections((prev) => {
+      if (prev[col.name]) return prev;
+      return {
+        ...prev,
+        [col.name]: { generator: col.generator || defaultGeneratorForType(col.type), options: col.options || {} },
+      };
+    });
+  };
+
+  const updateSeedGenerator = (colName: string, generator: string) => {
+    setSeedSelections((prev) => ({ ...prev, [colName]: { generator, options: {} } }));
+  };
+
+  const updateSeedOption = (colName: string, key: string, value: any) => {
+    setSeedSelections((prev) => ({
+      ...prev,
+      [colName]: { generator: prev[colName]?.generator || '', options: { ...prev[colName]?.options, [key]: value } },
+    }));
+  };
+
+  const buildSeedColumnsPayload = (): Record<string, { generator: string; options?: Record<string, any> }> => {
+    const payload: Record<string, { generator: string; options?: Record<string, any> }> = {};
+    if (!seedPlan) return payload;
+    seedPlan.columns.forEach((col) => {
+      const included = !col.skip || seedOverrides[col.name];
+      if (!included) return;
+      const sel = seedSelections[col.name];
+      if (!sel || !sel.generator) return;
+      payload[col.name] = { generator: sel.generator, options: sel.options };
+    });
+    return payload;
+  };
+
+  const handleSeedCountChange = (raw: string) => {
+    const n = parseInt(raw, 10);
+    if (isNaN(n)) {
+      setSeedCount(1);
+      return;
+    }
+    setSeedCount(Math.max(1, Math.min(100000, n)));
+  };
+
+  const handleSeedPreview = async () => {
+    if (!selectedTable) return;
+    setSeedPreviewLoading(true);
+    setSeedError(null);
+    try {
+      const data = await seedTable(selectedTable.name, { count: 5, dryRun: true, columns: buildSeedColumnsPayload() });
+      setSeedPreviewRows((data as { rows: Record<string, any>[] }).rows || []);
+    } catch (err: any) {
+      setSeedError(err.message || 'Failed to preview seed data');
+    } finally {
+      setSeedPreviewLoading(false);
+    }
+  };
+
+  const handleSeedInsert = async () => {
+    if (!selectedTable || !isWrite) return;
+    setSeedInsertLoading(true);
+    setSeedError(null);
+    try {
+      const data = await seedTable(selectedTable.name, { count: seedCount, dryRun: false, columns: buildSeedColumnsPayload() });
+      const inserted = (data as { inserted: number }).inserted;
+      setToast({ message: `Inserted ${inserted} rows`, type: 'success' });
+      setTimeout(() => setToast(null), 3000);
+      setSeedPreviewRows(null);
+      setPage(1);
+      setRefetchTrigger((prev) => prev + 1);
+      fetchMetaAndTables();
+    } catch (err: any) {
+      setSeedError(err.message || 'Failed to seed table');
+    } finally {
+      setSeedInsertLoading(false);
+    }
+  };
+
   const getRowKey = (row: any[]) => {
     if (!schema || !rowsData) return {};
     const key: Record<string, any> = {};
@@ -934,6 +1079,35 @@ export default function App() {
         setSchemaError(err.message || 'Failed to fetch table schema');
       });
   }, [selectedTable]);
+
+  // Load the seed plan when entering the Seed tab (or switching tables while on it)
+  useEffect(() => {
+    if (activeTab !== 'seed' || !selectedTable) return;
+
+    setSeedPlan(null);
+    setSeedPlanError(null);
+    setSeedSelections({});
+    setSeedOverrides({});
+    setSeedPreviewRows(null);
+    setSeedError(null);
+    setSeedPlanLoading(true);
+
+    getSeedPlan(selectedTable.name)
+      .then((plan) => {
+        setSeedPlan(plan);
+        const selections: Record<string, SeedColumnSelection> = {};
+        plan.columns.forEach((col) => {
+          if (!col.skip && col.generator) {
+            selections[col.name] = { generator: col.generator, options: col.options || {} };
+          }
+        });
+        setSeedSelections(selections);
+      })
+      .catch((err: any) => {
+        setSeedPlanError(err.message || 'Failed to load seed plan');
+      })
+      .finally(() => setSeedPlanLoading(false));
+  }, [activeTab, selectedTable?.name]);
 
   // Fetch rows
   useEffect(() => {
@@ -2178,30 +2352,240 @@ export default function App() {
             {activeTab === 'seed' && selectedTable && (
               <section className="space-y-4">
                 <h3 className="font-semibold text-slate-900 dark:text-white">
-                  Seed {selectedTable.name} with fake data
+                  Seed <span className="font-mono text-indigo-500">{selectedTable.name}</span> with fake data
                 </h3>
-                <div className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden bg-white dark:bg-slate-900 max-w-xl">
-                  <table className="w-full text-sm">
-                    <thead className="bg-slate-100 dark:bg-slate-800/60 text-slate-500 text-left">
-                      <tr>
-                        <th className="px-3 py-2 font-medium">Column</th>
-                        <th className="px-3 py-2 font-medium">Generator</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-mono text-xs">
-                      {schema?.columns.map((col) => (
-                        <tr key={col.name}>
-                          <td className="px-3 py-2">{col.name}</td>
-                          <td className="px-3 py-2">
-                            <span className="px-2 py-0.5 rounded bg-indigo-50 dark:bg-indigo-500/20 text-indigo-600 dark:text-indigo-300">
-                              default
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                <p className="text-sm text-slate-500 -mt-2">Generators auto-suggested from column name &amp; type.</p>
+
+                {!isWrite && (
+                  <div className="rounded-lg border border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-300 text-sm px-4 py-2.5 max-w-2xl">
+                    Write mode is required to seed data. Relaunch with <code className="font-mono">--write</code>.
+                  </div>
+                )}
+
+                {seedPlanLoading && <p className="text-sm text-slate-400">Loading seed plan…</p>}
+                {seedPlanError && <p className="text-sm text-rose-500">{seedPlanError}</p>}
+
+                {seedPlan && (
+                  <>
+                    <div className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden bg-white dark:bg-slate-900 max-w-2xl">
+                      <table className="w-full text-sm">
+                        <thead className="bg-slate-100 dark:bg-slate-800/60 text-slate-500 text-left">
+                          <tr>
+                            <th className="px-3 py-2 font-medium">Column</th>
+                            <th className="px-3 py-2 font-medium">Generator</th>
+                            <th className="px-3 py-2 font-medium">Options</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-xs">
+                          {seedPlan.columns.map((col) => {
+                            const overridden = !!seedOverrides[col.name];
+                            const active = !col.skip || overridden;
+                            const sel = seedSelections[col.name];
+
+                            if (col.skip && !overridden) {
+                              return (
+                                <tr key={col.name} className="opacity-50">
+                                  <td className="px-3 py-2 font-mono">{col.name}</td>
+                                  <td className="px-3 py-2 text-slate-400 italic" colSpan={2}>
+                                    skipped — {col.reason}{' '}
+                                    <button
+                                      onClick={() => toggleSeedOverride(col)}
+                                      className="ml-2 not-italic underline text-indigo-500 hover:text-indigo-600 cursor-pointer"
+                                    >
+                                      Override
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            }
+
+                            return (
+                              <tr key={col.name}>
+                                <td className="px-3 py-2 font-mono align-top">
+                                  {col.name}
+                                  {col.skip && (
+                                    <button
+                                      onClick={() => toggleSeedOverride(col)}
+                                      className="block mt-1 not-italic underline text-slate-400 hover:text-indigo-500 cursor-pointer"
+                                    >
+                                      Skip again
+                                    </button>
+                                  )}
+                                </td>
+                                <td className="px-3 py-2 align-top">
+                                  <select
+                                    value={sel?.generator || ''}
+                                    onChange={(e) => updateSeedGenerator(col.name, e.target.value)}
+                                    disabled={!isWrite || !active}
+                                    className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white font-mono text-xs outline-none"
+                                  >
+                                    {seedPlan.availableGenerators.map((g) => (
+                                      <option key={g} value={g}>{g}</option>
+                                    ))}
+                                  </select>
+                                </td>
+                                <td className="px-3 py-2 align-top">
+                                  {sel?.generator === 'foreignKey' ? (
+                                    <span className="text-slate-400">
+                                      {sel.options?.table}.{sel.options?.column}
+                                    </span>
+                                  ) : sel?.generator === 'int' || sel?.generator === 'float' || sel?.generator === 'price' ? (
+                                    <div className="flex items-center gap-1">
+                                      <input
+                                        type="number"
+                                        placeholder="min"
+                                        value={sel.options?.min ?? ''}
+                                        onChange={(e) => updateSeedOption(col.name, 'min', e.target.value === '' ? undefined : Number(e.target.value))}
+                                        disabled={!isWrite}
+                                        className="w-16 px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 outline-none"
+                                      />
+                                      <span className="text-slate-400">–</span>
+                                      <input
+                                        type="number"
+                                        placeholder="max"
+                                        value={sel.options?.max ?? ''}
+                                        onChange={(e) => updateSeedOption(col.name, 'max', e.target.value === '' ? undefined : Number(e.target.value))}
+                                        disabled={!isWrite}
+                                        className="w-16 px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 outline-none"
+                                      />
+                                    </div>
+                                  ) : sel?.generator === 'datetime' ? (
+                                    <div className="flex items-center gap-1 flex-wrap">
+                                      <input
+                                        type="text"
+                                        placeholder="from (RFC3339)"
+                                        value={sel.options?.from ?? ''}
+                                        onChange={(e) => updateSeedOption(col.name, 'from', e.target.value || undefined)}
+                                        disabled={!isWrite}
+                                        className="w-32 px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 outline-none"
+                                      />
+                                      <input
+                                        type="text"
+                                        placeholder="to (RFC3339)"
+                                        value={sel.options?.to ?? ''}
+                                        onChange={(e) => updateSeedOption(col.name, 'to', e.target.value || undefined)}
+                                        disabled={!isWrite}
+                                        className="w-32 px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 outline-none"
+                                      />
+                                      <label className="flex items-center gap-1 text-slate-400">
+                                        <input
+                                          type="checkbox"
+                                          checked={!!sel.options?.onlyDate}
+                                          onChange={(e) => updateSeedOption(col.name, 'onlyDate', e.target.checked)}
+                                          disabled={!isWrite}
+                                        />
+                                        date only
+                                      </label>
+                                    </div>
+                                  ) : sel?.generator === 'sentence' ? (
+                                    <input
+                                      type="number"
+                                      placeholder="words"
+                                      value={sel.options?.wordCount ?? ''}
+                                      onChange={(e) => updateSeedOption(col.name, 'wordCount', e.target.value === '' ? undefined : Number(e.target.value))}
+                                      disabled={!isWrite}
+                                      className="w-20 px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 outline-none"
+                                    />
+                                  ) : sel?.generator === 'paragraph' ? (
+                                    <input
+                                      type="number"
+                                      placeholder="sentences"
+                                      value={sel.options?.sentences ?? ''}
+                                      onChange={(e) => updateSeedOption(col.name, 'sentences', e.target.value === '' ? undefined : Number(e.target.value))}
+                                      disabled={!isWrite}
+                                      className="w-20 px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 outline-none"
+                                    />
+                                  ) : sel?.generator === 'bytes' ? (
+                                    <input
+                                      type="number"
+                                      placeholder="length"
+                                      value={sel.options?.length ?? ''}
+                                      onChange={(e) => updateSeedOption(col.name, 'length', e.target.value === '' ? undefined : Number(e.target.value))}
+                                      disabled={!isWrite}
+                                      className="w-20 px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 outline-none"
+                                    />
+                                  ) : (
+                                    <span className="text-slate-300 dark:text-slate-700">—</span>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <label className="text-sm flex items-center gap-2">
+                        Rows
+                        <input
+                          type="number"
+                          min={1}
+                          max={100000}
+                          value={seedCount}
+                          onChange={(e) => handleSeedCountChange(e.target.value)}
+                          disabled={!isWrite}
+                          className="font-mono w-28 px-2 py-1 rounded border border-slate-300 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white outline-none"
+                        />
+                      </label>
+                      {seedCount >= 100000 && (
+                        <span className="text-xs text-amber-500">clamped to 100,000</span>
+                      )}
+                      <button
+                        onClick={handleSeedPreview}
+                        disabled={!isWrite || seedPreviewLoading}
+                        className={`px-3 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 text-sm ${
+                          isWrite ? 'hover:bg-slate-100 dark:hover:bg-slate-850 cursor-pointer' : 'opacity-50 cursor-not-allowed'
+                        }`}
+                      >
+                        {seedPreviewLoading ? 'Previewing…' : 'Preview 5 rows'}
+                      </button>
+                      <button
+                        onClick={handleSeedInsert}
+                        disabled={!isWrite || seedInsertLoading}
+                        title={isWrite ? 'Insert seeded rows' : 'Write mode required'}
+                        className={`px-3 py-1.5 rounded-md bg-indigo-600 text-white text-sm ${
+                          isWrite && !seedInsertLoading ? 'hover:bg-indigo-700 cursor-pointer' : 'opacity-50 cursor-not-allowed'
+                        }`}
+                      >
+                        {seedInsertLoading ? 'Inserting…' : 'Insert'}
+                      </button>
+                    </div>
+
+                    {seedError && (
+                      <p className="text-sm text-rose-500 max-w-2xl">{seedError}</p>
+                    )}
+
+                    {seedPreviewRows && (
+                      <div className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-auto bg-white dark:bg-slate-900 max-w-2xl">
+                        <table className="w-full text-xs font-mono">
+                          <thead className="bg-slate-100 dark:bg-slate-800/60 text-slate-500 text-left">
+                            <tr>
+                              {Object.keys(seedPreviewRows[0] || {}).map((col) => (
+                                <th key={col} className="px-3 py-2 font-medium">{col}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                            {seedPreviewRows.map((row, i) => (
+                              <tr key={i}>
+                                {Object.keys(seedPreviewRows[0] || {}).map((col) => (
+                                  <td key={col} className="px-3 py-2 text-slate-700 dark:text-slate-300">
+                                    {row[col] === null || row[col] === undefined ? (
+                                      <span className="text-slate-400 italic">NULL</span>
+                                    ) : (
+                                      String(row[col])
+                                    )}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </>
+                )}
               </section>
             )}
 
