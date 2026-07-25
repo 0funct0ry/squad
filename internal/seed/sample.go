@@ -11,8 +11,20 @@ func GenerateSample(name, affinity string, opts map[string]any) (any, error) {
 	if !ok {
 		return nil, fmt.Errorf("unknown generator: %s", name)
 	}
-	if name == ForeignKeyGeneratorName || name == "formula" {
+	if name == ForeignKeyGeneratorName || name == "formula" || name == "enumFromColumn" {
 		return nil, fmt.Errorf("generator %s cannot be previewed without table/row context", name)
+	}
+	if name == "geohash" {
+		return genGeohashStandalone(opts)
+	}
+	if name == "incrementalEnum" {
+		values := parseValuesList(optString(opts, "values", ""))
+		if len(values) == 0 {
+			return nil, fmt.Errorf("incrementalEnum: requires at least 1 value")
+		}
+		start := optInt(opts, "start", 0)
+		val, _ := nextIncrementalEnumValue(values, start, 1)
+		return val, nil
 	}
 	if def.Stateful {
 		st := &sequenceState{}

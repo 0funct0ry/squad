@@ -14,7 +14,7 @@ func formulaGenerators() []GeneratorDef {
 			Affinities:  []string{"TEXT", "INTEGER", "REAL", "NUMERIC"},
 			OptionsSchema: []OptionField{
 				{Key: "columns", Label: "Referenced columns", Kind: OptKindColumns, Required: true, Description: "Sibling columns this formula reads"},
-				{Key: "expression", Label: "Expression", Kind: OptKindString, Required: true, Description: "e.g. price * qty"},
+				{Key: "expression", Label: "Expression", Kind: OptKindString, Required: true, Description: "e.g. price * qty, or round(price * qty), upper(concat(first, last)), sha256(email)"},
 			},
 			Fn: nil,
 		},

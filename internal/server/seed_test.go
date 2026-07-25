@@ -625,7 +625,7 @@ func TestSeedGeneratorSample_ForeignKeyAndFormulaRejected(t *testing.T) {
 	defer ts.Close()
 	client := ts.Client()
 
-	for _, name := range []string{"foreignKey", "formula"} {
+	for _, name := range []string{"foreignKey", "formula", "enumFromColumn"} {
 		resp := doJSON(t, client, "GET", ts.URL+"/api/seed/generators/"+name+"/sample", nil)
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusBadRequest {
@@ -635,6 +635,189 @@ func TestSeedGeneratorSample_ForeignKeyAndFormulaRejected(t *testing.T) {
 		if res.Error == nil || res.Error.Code != "BAD_REQUEST" {
 			t.Errorf("%s: expected BAD_REQUEST, got %+v", name, res.Error)
 		}
+	}
+}
+
+func TestSeedEnumFromColumnValuesValid(t *testing.T) {
+	dbPath := scratchExamplePath(t, "blog")
+	database, err := db.OpenDB(dbPath, false)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer database.Close()
+
+	srv := NewServer(database, dbPath, true)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client := ts.Client()
+
+	resp := doJSON(t, client, "POST", ts.URL+"/api/tables/post_stats/seed", map[string]any{
+		"count":  5,
+		"dryRun": true,
+		"columns": map[string]any{
+			"post_id": map[string]any{"generator": "enumFromColumn", "options": map[string]any{"table": "posts", "column": "status"}},
+		},
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body := parseResponse(t, resp)
+		t.Fatalf("expected 200, got %d: %+v", resp.StatusCode, body.Error)
+	}
+}
+
+func TestSeedEnumFromColumnUnknownTableRejected(t *testing.T) {
+	dbPath := scratchExamplePath(t, "blog")
+	database, err := db.OpenDB(dbPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	srv := NewServer(database, dbPath, true)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client := ts.Client()
+
+	resp := doJSON(t, client, "POST", ts.URL+"/api/tables/posts/seed", map[string]any{
+		"count":  1,
+		"dryRun": true,
+		"columns": map[string]any{
+			"title": map[string]any{"generator": "enumFromColumn", "options": map[string]any{"table": "nope", "column": "x"}},
+		},
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+	res := parseResponse(t, resp)
+	if res.Error == nil || res.Error.Code != "NOT_FOUND" {
+		t.Errorf("expected NOT_FOUND, got %+v", res.Error)
+	}
+}
+
+func TestSeedEnumFromColumnUnknownColumnRejected(t *testing.T) {
+	dbPath := scratchExamplePath(t, "blog")
+	database, err := db.OpenDB(dbPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	srv := NewServer(database, dbPath, true)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client := ts.Client()
+
+	resp := doJSON(t, client, "POST", ts.URL+"/api/tables/posts/seed", map[string]any{
+		"count":  1,
+		"dryRun": true,
+		"columns": map[string]any{
+			"title": map[string]any{"generator": "enumFromColumn", "options": map[string]any{"table": "posts", "column": "nope"}},
+		},
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+	res := parseResponse(t, resp)
+	if res.Error == nil || res.Error.Code != "NOT_FOUND" {
+		t.Errorf("expected NOT_FOUND, got %+v", res.Error)
+	}
+}
+
+func TestSeedNullWithProbabilityUnknownWrappedGeneratorRejected(t *testing.T) {
+	dbPath := scratchExamplePath(t, "blog")
+	database, err := db.OpenDB(dbPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	srv := NewServer(database, dbPath, true)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client := ts.Client()
+
+	resp := doJSON(t, client, "POST", ts.URL+"/api/tables/posts/seed", map[string]any{
+		"count":  1,
+		"dryRun": true,
+		"columns": map[string]any{
+			"title": map[string]any{"generator": "nullWithProbability", "options": map[string]any{
+				"generator": map[string]any{"generator": "doesNotExist"},
+				"nullRate":  0.1,
+			}},
+		},
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+	res := parseResponse(t, resp)
+	if res.Error == nil || res.Error.Code != "BAD_REQUEST" {
+		t.Errorf("expected BAD_REQUEST, got %+v", res.Error)
+	}
+}
+
+func TestSeedNullWithProbabilitySelfReferenceRejected(t *testing.T) {
+	dbPath := scratchExamplePath(t, "blog")
+	database, err := db.OpenDB(dbPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	srv := NewServer(database, dbPath, true)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client := ts.Client()
+
+	resp := doJSON(t, client, "POST", ts.URL+"/api/tables/posts/seed", map[string]any{
+		"count":  1,
+		"dryRun": true,
+		"columns": map[string]any{
+			"title": map[string]any{"generator": "nullWithProbability", "options": map[string]any{
+				"generator": map[string]any{"generator": "nullWithProbability"},
+				"nullRate":  0.1,
+			}},
+		},
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+	res := parseResponse(t, resp)
+	if res.Error == nil || res.Error.Code != "BAD_REQUEST" {
+		t.Errorf("expected BAD_REQUEST, got %+v", res.Error)
+	}
+}
+
+func TestSeedNullWithProbabilityValidWrapWorks(t *testing.T) {
+	dbPath := scratchExamplePath(t, "blog")
+	database, err := db.OpenDB(dbPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	srv := NewServer(database, dbPath, true)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client := ts.Client()
+
+	resp := doJSON(t, client, "POST", ts.URL+"/api/tables/posts/seed", map[string]any{
+		"count":  10,
+		"dryRun": true,
+		"columns": map[string]any{
+			"title": map[string]any{"generator": "nullWithProbability", "options": map[string]any{
+				"generator": map[string]any{"generator": "sentence"},
+				"nullRate":  0.2,
+			}},
+		},
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body := parseResponse(t, resp)
+		t.Fatalf("expected 200, got %d: %+v", resp.StatusCode, body.Error)
 	}
 }
 

@@ -21,13 +21,15 @@ type GeneratorFunc func(affinity string, opts map[string]any) (any, error)
 type OptionKind string
 
 const (
-	OptKindInt      OptionKind = "int"
-	OptKindFloat    OptionKind = "float"
-	OptKindBool     OptionKind = "bool"
-	OptKindString   OptionKind = "string"
-	OptKindDateTime OptionKind = "datetime" // RFC3339 wire format, matches optTime
-	OptKindSelect   OptionKind = "select"
-	OptKindColumns  OptionKind = "columns" // formula-only: multi-select of sibling column names
+	OptKindInt       OptionKind = "int"
+	OptKindFloat     OptionKind = "float"
+	OptKindBool      OptionKind = "bool"
+	OptKindString    OptionKind = "string"
+	OptKindDateTime  OptionKind = "datetime" // RFC3339 wire format, matches optTime
+	OptKindSelect    OptionKind = "select"
+	OptKindColumns   OptionKind = "columns"   // formula-only: multi-select of sibling column names
+	OptKindTextarea  OptionKind = "textarea"  // multi-line free text, e.g. value lists / DSL blocks
+	OptKindGenerator OptionKind = "generator" // nested {generator, options} value, e.g. nullWithProbability
 )
 
 // OptionField describes one declarative, UI-renderable option for a generator.
@@ -177,6 +179,10 @@ func buildRegistry() map[string]GeneratorDef {
 			return b, nil
 		}},
 		{Name: ForeignKeyGeneratorName, Group: "special", Description: "Reference an existing row in another table", Affinities: nil, Fn: nil},
+		{Name: "enumFromColumn", Group: "special", Description: "Pick from the real distinct values already present in another table/column", Affinities: []string{"TEXT", "INTEGER", "REAL"}, OptionsSchema: []OptionField{
+			{Key: "table", Label: "Table", Kind: OptKindString, Required: true},
+			{Key: "column", Label: "Column", Kind: OptKindString, Required: true},
+		}, Fn: nil},
 	}
 
 	defs = append(defs, personGenerators()...)
@@ -198,6 +204,10 @@ func buildRegistry() map[string]GeneratorDef {
 	defs = append(defs, sequenceGenerators()...)
 	defs = append(defs, formulaGenerators()...)
 	defs = append(defs, mediaGenerators()...)
+	defs = append(defs, customListGenerators()...)
+	defs = append(defs, crossColumnExtraGenerators()...)
+	defs = append(defs, nullWithProbabilityGenerators()...)
+	defs = append(defs, misc2Generators()...)
 
 	m := make(map[string]GeneratorDef, len(defs))
 	for _, d := range defs {

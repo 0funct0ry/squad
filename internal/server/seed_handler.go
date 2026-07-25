@@ -187,6 +187,73 @@ func (s *Server) handleSeedTable(c *gin.Context) {
 			}
 		}
 
+		if colReq.Generator == "enumFromColumn" {
+			table, _ := options["table"].(string)
+			column, _ := options["column"].(string)
+			if table == "" || column == "" {
+				c.JSON(400, gin.H{
+					"ok":    false,
+					"error": gin.H{"code": "BAD_REQUEST", "message": "enumFromColumn generator requires options.table and options.column"},
+				})
+				return
+			}
+			refSchema, err := db.GetTableSchema(s.db, table)
+			if err != nil {
+				if errors.Is(err, db.ErrNotFound) {
+					c.JSON(404, gin.H{
+						"ok":    false,
+						"error": gin.H{"code": "NOT_FOUND", "message": fmt.Sprintf("referenced table not found: %s", table)},
+					})
+					return
+				}
+				c.JSON(500, gin.H{
+					"ok":    false,
+					"error": gin.H{"code": "DB_ERROR", "message": err.Error()},
+				})
+				return
+			}
+			found := false
+			for _, rc := range refSchema.Columns {
+				if rc.Name == column {
+					found = true
+					break
+				}
+			}
+			if !found {
+				c.JSON(404, gin.H{
+					"ok":    false,
+					"error": gin.H{"code": "NOT_FOUND", "message": fmt.Sprintf("referenced column not found: %s.%s", table, column)},
+				})
+				return
+			}
+		}
+
+		if colReq.Generator == "nullWithProbability" {
+			wrapped, _ := options["generator"].(map[string]any)
+			wrappedName, _ := wrapped["generator"].(string)
+			if wrappedName == "" {
+				c.JSON(400, gin.H{
+					"ok":    false,
+					"error": gin.H{"code": "BAD_REQUEST", "message": "nullWithProbability generator requires options.generator.generator"},
+				})
+				return
+			}
+			if wrappedName == "nullWithProbability" {
+				c.JSON(400, gin.H{
+					"ok":    false,
+					"error": gin.H{"code": "BAD_REQUEST", "message": "nullWithProbability cannot wrap itself"},
+				})
+				return
+			}
+			if !seed.Exists(wrappedName) {
+				c.JSON(400, gin.H{
+					"ok":    false,
+					"error": gin.H{"code": "BAD_REQUEST", "message": fmt.Sprintf("nullWithProbability: unknown wrapped generator: %s", wrappedName)},
+				})
+				return
+			}
+		}
+
 		specs[colName] = seed.ColumnSpec{Generator: colReq.Generator, Options: options}
 	}
 
@@ -329,7 +396,7 @@ func (s *Server) handleSeedGeneratorSample(c *gin.Context) {
 		return
 	}
 
-	if name == seed.ForeignKeyGeneratorName || name == "formula" {
+	if name == seed.ForeignKeyGeneratorName || name == "formula" || name == "enumFromColumn" {
 		c.JSON(400, gin.H{
 			"ok":    false,
 			"error": gin.H{"code": "BAD_REQUEST", "message": fmt.Sprintf("generator %s cannot be previewed without table/row context", name)},

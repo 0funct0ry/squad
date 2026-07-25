@@ -40,12 +40,23 @@ type RowGenerator struct {
 	schema         *db.TableSchema
 	colAffinity    map[string]string
 	fkPools        map[string]*fkPool
+	enumPools      map[string]*fkPool
 	columns        map[string]ColumnSpec
 	relevantGroups [][]string
 	seen           map[string]map[string]bool
 	orderedColumns []string
 	formulaDeps    map[string][]string
 	seqState       map[string]*sequenceState
+	enumSeqState   map[string]*enumSequenceState
+}
+
+// enumSequenceState holds the mutable per-column cursor state for the
+// incrementalEnum generator, which cycles through a user-typed value list in
+// order rather than counting a bare int64 like sequenceState.
+type enumSequenceState struct {
+	values []string
+	next   int
+	step   int
 }
 
 // NewRowGenerator prepares a generator for the given column specs: it samples
@@ -78,6 +89,27 @@ func NewRowGenerator(sqlDB *sql.DB, schema *db.TableSchema, columns map[string]C
 		fkPools[key] = pool
 	}
 
+	enumPools := make(map[string]*fkPool)
+	for _, spec := range columns {
+		if spec.Generator != "enumFromColumn" {
+			continue
+		}
+		table, _ := spec.Options["table"].(string)
+		column, _ := spec.Options["column"].(string)
+		key := table + "\x00" + column
+		if _, ok := enumPools[key]; ok {
+			continue
+		}
+		pool, err := sampleDistinctColumnPool(sqlDB, table, column, 500)
+		if err != nil {
+			return nil, err
+		}
+		if len(pool.values) == 0 {
+			return nil, &EmptyReferenceError{Table: table}
+		}
+		enumPools[key] = pool
+	}
+
 	uniqueGroups := computeUniqueGroups(schema)
 	var relevantGroups [][]string
 	seenGroupKey := map[string]bool{}
@@ -94,7 +126,7 @@ func NewRowGenerator(sqlDB *sql.DB, schema *db.TableSchema, columns map[string]C
 		relevantGroups = append(relevantGroups, group)
 	}
 
-	formulaDeps := buildFormulaDeps(columns)
+	formulaDeps := buildCrossColumnDeps(columns)
 	orderedColumns, err := topoSortColumns(columns, formulaDeps)
 	if err != nil {
 		return nil, err
@@ -116,16 +148,32 @@ func NewRowGenerator(sqlDB *sql.DB, schema *db.TableSchema, columns map[string]C
 		seqState[colName] = &sequenceState{next: int64(start)}
 	}
 
+	enumSeqState := make(map[string]*enumSequenceState)
+	for colName, spec := range columns {
+		if spec.Generator != "incrementalEnum" {
+			continue
+		}
+		values := parseValuesList(optString(spec.Options, "values", ""))
+		if len(values) == 0 {
+			return nil, fmt.Errorf("incrementalEnum column %q: requires at least 1 value", colName)
+		}
+		start := optInt(spec.Options, "start", 0)
+		step := optInt(spec.Options, "step", 1)
+		enumSeqState[colName] = &enumSequenceState{values: values, next: start, step: step}
+	}
+
 	return &RowGenerator{
 		schema:         schema,
 		colAffinity:    colAffinity,
 		fkPools:        fkPools,
+		enumPools:      enumPools,
 		columns:        columns,
 		relevantGroups: relevantGroups,
 		seen:           make(map[string]map[string]bool),
 		orderedColumns: orderedColumns,
 		formulaDeps:    formulaDeps,
 		seqState:       seqState,
+		enumSeqState:   enumSeqState,
 	}, nil
 }
 
@@ -143,8 +191,43 @@ func (g *RowGenerator) generateValue(colName string, spec ColumnSpec, rowSoFar m
 		pool := g.fkPools[table+"\x00"+column]
 		return pool.values[rand.Intn(len(pool.values))], nil
 	}
+	if spec.Generator == "enumFromColumn" {
+		table, _ := spec.Options["table"].(string)
+		column, _ := spec.Options["column"].(string)
+		pool := g.enumPools[table+"\x00"+column]
+		return pool.values[rand.Intn(len(pool.values))], nil
+	}
 	if spec.Generator == "formula" {
 		return g.evalFormula(colName, spec, rowSoFar)
+	}
+	if spec.Generator == "dependentOneOf" {
+		return g.evalDependentOneOf(colName, spec, rowSoFar)
+	}
+	if spec.Generator == "customDateSequence" {
+		return g.evalCustomDateSequence(colName, spec, rowSoFar)
+	}
+	if spec.Generator == "statusTransitionLog" {
+		return g.evalStatusTransitionLog(colName, spec, rowSoFar)
+	}
+	if spec.Generator == "checksumOfColumns" {
+		return g.evalChecksumOfColumns(colName, spec, rowSoFar)
+	}
+	if spec.Generator == "slugFromColumn" {
+		return g.evalSlugFromColumn(colName, spec, rowSoFar)
+	}
+	if spec.Generator == "jsonTemplate" {
+		return g.evalJSONTemplate(colName, spec, rowSoFar)
+	}
+	if spec.Generator == "geohash" {
+		return g.evalGeohash(spec, rowSoFar)
+	}
+	if spec.Generator == "nullWithProbability" {
+		return g.evalNullWithProbability(colName, spec, rowSoFar)
+	}
+	if st, ok := g.enumSeqState[colName]; ok {
+		val, next := nextIncrementalEnumValue(st.values, st.next, st.step)
+		st.next = next
+		return val, nil
 	}
 	if st, ok := g.seqState[colName]; ok {
 		return g.generateStateful(spec, st)
@@ -284,6 +367,31 @@ func GenerateRows(sqlDB *sql.DB, schema *db.TableSchema, columns map[string]Colu
 func sampleForeignKeyPool(sqlDB *sql.DB, table, column string) (*fkPool, error) {
 	query := fmt.Sprintf("SELECT %s FROM %s ORDER BY RANDOM() LIMIT 10000",
 		db.QuoteIdentifier(column), db.QuoteIdentifier(table))
+	rows, err := sqlDB.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var values []any
+	for rows.Next() {
+		var v any
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		values = append(values, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return &fkPool{values: values}, nil
+}
+
+// sampleDistinctColumnPool samples up to limit distinct, non-NULL values
+// actually present in table.column, for the enumFromColumn generator.
+func sampleDistinctColumnPool(sqlDB *sql.DB, table, column string, limit int) (*fkPool, error) {
+	query := fmt.Sprintf("SELECT DISTINCT %s FROM %s WHERE %s IS NOT NULL ORDER BY RANDOM() LIMIT %d",
+		db.QuoteIdentifier(column), db.QuoteIdentifier(table), db.QuoteIdentifier(column), limit)
 	rows, err := sqlDB.Query(query)
 	if err != nil {
 		return nil, err

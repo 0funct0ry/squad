@@ -22,13 +22,14 @@ import {
   Boxes,
   Image as ImageIcon,
   AudioLines,
+  ListChecks,
   type LucideIcon,
 } from 'lucide-react';
 import { sniffBase64, dataUriFromBase64, type BlobMediaType } from '../lib/blobMedia';
 
-type OptionKind = 'int' | 'float' | 'bool' | 'string' | 'datetime' | 'select' | 'columns';
+export type OptionKind = 'int' | 'float' | 'bool' | 'string' | 'datetime' | 'select' | 'columns' | 'textarea' | 'generator';
 
-interface OptionField {
+export interface OptionField {
   key: string;
   label: string;
   kind: OptionKind;
@@ -40,7 +41,7 @@ interface OptionField {
   description?: string;
 }
 
-interface GeneratorMeta {
+export interface GeneratorMeta {
   name: string;
   group: string;
   aliases?: string[];
@@ -84,6 +85,7 @@ const GROUP_PRESENTATION: Record<string, { label: string; icon: LucideIcon }> = 
   'domain-lookup': { label: 'Domain Lookup', icon: Layers },
   special: { label: 'Special', icon: Boxes },
   media: { label: 'Media', icon: ImageIcon },
+  'custom-list': { label: 'Custom List', icon: ListChecks },
 };
 
 const FALLBACK_PRESENTATION = { label: '', icon: Boxes };
@@ -163,7 +165,7 @@ function GeneratorCard({
   // endpoint from being hit for every card in the (potentially 199-entry)
   // catalog just because the modal is open.
   const load = () => {
-    if (fetched || gen.name === 'foreignKey' || gen.name === 'formula') return;
+    if (fetched || gen.name === 'foreignKey' || gen.name === 'formula' || gen.name === 'enumFromColumn') return;
     setFetched(true);
     const affinity = gen.affinities.includes(targetAffinity) ? targetAffinity : gen.affinities[0];
     if (!affinity) return;

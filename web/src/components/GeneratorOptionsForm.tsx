@@ -1,22 +1,15 @@
-type OptionKind = 'int' | 'float' | 'bool' | 'string' | 'datetime' | 'select' | 'columns';
+import { useState } from 'react';
+import GeneratorPicker, { type OptionField, type GeneratorMeta } from './GeneratorPicker';
 
-interface OptionField {
-  key: string;
-  label: string;
-  kind: OptionKind;
-  default?: unknown;
-  choices?: string[];
-  min?: number;
-  max?: number;
-  required?: boolean;
-  description?: string;
-}
+export type { OptionField, GeneratorMeta };
 
 interface GeneratorOptionsFormProps {
   schema: OptionField[];
   values: Record<string, unknown>;
   onChange: (key: string, value: unknown) => void;
   siblingColumns?: string[];
+  catalog?: GeneratorMeta[];
+  affinity?: string;
 }
 
 const inputClass =
@@ -41,7 +34,79 @@ function localInputToRfc3339(value: string): string | undefined {
   return d.toISOString();
 }
 
-export default function GeneratorOptionsForm({ schema, values, onChange, siblingColumns }: GeneratorOptionsFormProps) {
+// Value shape stored for an OptKindGenerator option (nullWithProbability's
+// "generator" option): the wrapped generator's name plus its own options,
+// mirroring ColumnSpec's own {generator, options} shape one level down.
+interface WrappedGeneratorValue {
+  generator?: string;
+  options?: Record<string, unknown>;
+}
+
+function WrappedGeneratorField({
+  field,
+  value,
+  onChange,
+  catalog,
+  affinity,
+  siblingColumns,
+}: {
+  field: OptionField;
+  value: WrappedGeneratorValue;
+  onChange: (value: WrappedGeneratorValue) => void;
+  catalog: GeneratorMeta[];
+  affinity: string;
+  siblingColumns?: string[];
+}) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const wrappedName = value?.generator || '';
+  const wrappedMeta = catalog.find((g) => g.name === wrappedName);
+
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-slate-400">{field.label}</span>
+      <button
+        type="button"
+        onClick={() => setPickerOpen(true)}
+        className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white font-mono text-xs outline-none text-left hover:border-indigo-400"
+      >
+        {wrappedName || '— choose a generator —'}
+      </button>
+      {wrappedMeta && (wrappedMeta.optionsSchema || []).length > 0 && (
+        <div className="pl-2 border-l border-slate-200 dark:border-slate-800">
+          <GeneratorOptionsForm
+            schema={wrappedMeta.optionsSchema || []}
+            values={value?.options || {}}
+            onChange={(key, v) =>
+              onChange({ generator: wrappedName, options: { ...(value?.options || {}), [key]: v } })
+            }
+            siblingColumns={siblingColumns}
+            catalog={catalog}
+            affinity={affinity}
+          />
+        </div>
+      )}
+      {pickerOpen && (
+        <GeneratorPicker
+          catalog={catalog.filter((g) => g.name !== 'nullWithProbability')}
+          currentGenerator={wrappedName}
+          targetAffinity={affinity}
+          recentlyUsed={[]}
+          onSelect={(name) => onChange({ generator: name, options: {} })}
+          onClose={() => setPickerOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+export default function GeneratorOptionsForm({
+  schema,
+  values,
+  onChange,
+  siblingColumns,
+  catalog,
+  affinity,
+}: GeneratorOptionsFormProps) {
   if (!schema || schema.length === 0) {
     return <span className="text-slate-300 dark:text-slate-700">—</span>;
   }
@@ -143,6 +208,35 @@ export default function GeneratorOptionsForm({ schema, values, onChange, sibling
                 ))}
               </div>
             </div>
+          );
+        }
+
+        if (field.kind === 'textarea') {
+          return (
+            <label key={field.key} className="flex flex-col gap-0.5 text-slate-400 w-full max-w-sm">
+              {field.label}
+              <textarea
+                placeholder={field.description || field.label}
+                value={(value as string) ?? ''}
+                onChange={(e) => onChange(field.key, e.target.value || undefined)}
+                rows={3}
+                className={`${inputClass} w-full font-mono resize-y`}
+              />
+            </label>
+          );
+        }
+
+        if (field.kind === 'generator') {
+          return (
+            <WrappedGeneratorField
+              key={field.key}
+              field={field}
+              value={(value as WrappedGeneratorValue) || {}}
+              onChange={(v) => onChange(field.key, v)}
+              catalog={catalog || []}
+              affinity={affinity || 'TEXT'}
+              siblingColumns={siblingColumns}
+            />
           );
         }
 

@@ -83,25 +83,65 @@ func sortStrings(s []string) {
 	}
 }
 
-// buildFormulaDeps builds the column -> dependency-list map for every column
-// whose generator is "formula", reading options["columns"] (expected []any
-// of strings, per the wire JSON shape).
-func buildFormulaDeps(columns map[string]ColumnSpec) map[string][]string {
+// buildCrossColumnDeps builds the column -> dependency-list map for every
+// column whose generator reads sibling column values via a "columns" option
+// (formula, plus M6c's dependentOneOf/statusTransitionLog/checksumOfColumns/
+// slugFromColumn/jsonTemplate, plus customDateSequence and geohash which get
+// special-cased handling below), reading options["columns"] (expected []any
+// of strings, per the wire JSON shape). A nullWithProbability column that
+// wraps one of these also contributes its wrapped generator's dependencies.
+func buildCrossColumnDeps(columns map[string]ColumnSpec) map[string][]string {
 	deps := make(map[string][]string)
 	for name, spec := range columns {
-		if spec.Generator != "formula" {
+		gen := spec.Generator
+		opts := spec.Options
+
+		if gen == "nullWithProbability" {
+			if wrappedName, wrappedOpts, err := wrappedGeneratorSpec(spec); err == nil {
+				gen = wrappedName
+				opts = wrappedOpts
+			}
+		}
+
+		// customDateSequence declares the full ordered milestone list
+		// (including its own column) in "columns" -- only earlier milestones
+		// are real dependencies, else every milestone column would depend on
+		// itself and trip the self-reference check below.
+		if gen == "customDateSequence" {
+			milestones := optStringSlice(opts, "columns")
+			var before []string
+			for _, m := range milestones {
+				if m == name {
+					break
+				}
+				before = append(before, m)
+			}
+			deps[name] = before
 			continue
 		}
-		deps[name] = optStringSlice(spec.Options, "columns")
+
+		// geohash only becomes cross-column when a 2-column lat/lng pair is
+		// supplied; otherwise it's a plain standalone generator with no deps.
+		if gen == "geohash" {
+			if cols := optStringSlice(opts, "columns"); len(cols) == 2 {
+				deps[name] = cols
+			}
+			continue
+		}
+
+		if !crossColumnGeneratorNames[gen] {
+			continue
+		}
+		deps[name] = optStringSlice(opts, "columns")
 	}
 	return deps
 }
 
-// ValidateFormulaDependencies checks that every formula column's declared
-// dependencies exist among columns and that no cycle or self-reference
-// exists, without actually generating any values.
+// ValidateFormulaDependencies checks that every cross-column generator's
+// declared dependencies exist among columns and that no cycle or
+// self-reference exists, without actually generating any values.
 func ValidateFormulaDependencies(columns map[string]ColumnSpec) error {
-	deps := buildFormulaDeps(columns)
+	deps := buildCrossColumnDeps(columns)
 	if len(deps) == 0 {
 		return nil
 	}
@@ -126,11 +166,13 @@ func (g *RowGenerator) evalFormula(colName string, spec ColumnSpec, rowSoFar map
 }
 
 // evalNode evaluates a restricted whitelist of AST node kinds: *ast.Ident,
-// *ast.BasicLit, *ast.ParenExpr, and *ast.BinaryExpr limited to + - * /. This
-// whitelist IS the safety mechanism -- any other node kind (calls, selectors,
-// indexing, unary ops, etc.) is rejected with an error rather than silently
-// ignored, since falling through would mean arbitrary-looking expressions
-// silently produce wrong or undefined results instead of failing loudly.
+// *ast.BasicLit, *ast.ParenExpr, *ast.BinaryExpr limited to + - * /, and
+// *ast.CallExpr limited to the functions registered in formulaFuncs. This
+// whitelist IS the safety mechanism -- any other node kind (selectors,
+// indexing, unary ops, a call to anything not in formulaFuncs, etc.) is
+// rejected with an error rather than silently ignored, since falling
+// through would mean arbitrary-looking expressions silently produce wrong
+// or undefined results instead of failing loudly.
 func evalNode(n ast.Expr, row map[string]any) (any, error) {
 	switch node := n.(type) {
 	case *ast.Ident:
@@ -182,6 +224,29 @@ func evalNode(n ast.Expr, row map[string]any) (any, error) {
 			return nil, err
 		}
 		return applyBinaryOp(node.Op, left, right)
+
+	case *ast.CallExpr:
+		fnIdent, ok := node.Fun.(*ast.Ident)
+		if !ok {
+			return nil, fmt.Errorf("formula: unsupported call target (expected a plain function name)")
+		}
+		fn, ok := formulaFuncs[fnIdent.Name]
+		if !ok {
+			return nil, fmt.Errorf("formula: unknown function %q", fnIdent.Name)
+		}
+		args := make([]any, len(node.Args))
+		for i, a := range node.Args {
+			v, err := evalNode(a, row)
+			if err != nil {
+				return nil, err
+			}
+			args[i] = v
+		}
+		v, err := fn(args)
+		if err != nil {
+			return nil, fmt.Errorf("formula: %w", err)
+		}
+		return v, nil
 
 	default:
 		return nil, fmt.Errorf("formula: unsupported expression syntax (%T)", n)

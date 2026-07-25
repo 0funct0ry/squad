@@ -30,7 +30,7 @@ func TestGuidAndUuid_ShapeParity(t *testing.T) {
 // expectedGeneratorCount pins the total number of registered generators
 // (including foreignKey) after the M6a registry expansion. Update this
 // alongside any future registry_*.go additions.
-const expectedGeneratorCount = 205
+const expectedGeneratorCount = 226
 
 func TestAvailableGeneratorsIncludesForeignKey(t *testing.T) {
 	names := AvailableGenerators()
@@ -95,8 +95,30 @@ func TestGenerateAllRegisteredGenerators(t *testing.T) {
 		t.Fatalf("expected %d registered generators, got %d: %v", expectedGeneratorCount, len(names), names)
 	}
 
+	// Fn: nil generators that need live DB access, row context, or a
+	// RowGenerator to produce a value -- exercised separately by their own
+	// package tests instead of the generic Generate() smoke test here.
+	needsContext := map[string]bool{
+		ForeignKeyGeneratorName: true,
+		"formula":               true,
+		"enumFromColumn":        true,
+		"dependentOneOf":        true,
+		"customDateSequence":    true,
+		"statusTransitionLog":   true,
+		"checksumOfColumns":     true,
+		"slugFromColumn":        true,
+		"jsonTemplate":          true,
+		"geohash":               true,
+		"nullWithProbability":   true,
+		// user-authored value-list generators with no sensible generic
+		// default -- exercised by registry_customlist_test.go instead.
+		"oneOf":         true,
+		"weightedOneOf": true,
+		"regexEnum":     true,
+	}
+
 	for _, name := range names {
-		if name == ForeignKeyGeneratorName || name == "formula" {
+		if needsContext[name] {
 			continue
 		}
 		meta, ok := GeneratorMetaByName(name)

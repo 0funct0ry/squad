@@ -114,7 +114,7 @@ interface SeedColumnPlan {
   uniqueGroup?: string[];
 }
 
-type OptionKind = 'int' | 'float' | 'bool' | 'string' | 'datetime' | 'select' | 'columns';
+type OptionKind = 'int' | 'float' | 'bool' | 'string' | 'datetime' | 'select' | 'columns' | 'textarea' | 'generator';
 
 interface OptionField {
   key: string;
@@ -2587,7 +2587,7 @@ export default function App() {
                                   </button>
                                 </td>
                                 <td className="px-3 py-2 align-top">
-                                  {sel?.generator === 'foreignKey' ? (
+                                  {sel?.generator === 'foreignKey' || sel?.generator === 'enumFromColumn' ? (
                                     <span className="text-slate-400">
                                       {sel.options?.table}.{sel.options?.column}
                                     </span>
@@ -2597,6 +2597,8 @@ export default function App() {
                                       values={sel?.options || {}}
                                       onChange={(key, value) => updateSeedOption(col.name, key, value)}
                                       siblingColumns={seedPlan.columns.map((c) => c.name)}
+                                      catalog={seedPlan.generatorCatalog}
+                                      affinity={sqliteAffinity(col.type)}
                                     />
                                   )}
                                 </td>
