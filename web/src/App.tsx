@@ -13,8 +13,16 @@ import {
   Database,
   RefreshCw,
   Check,
-  AlertCircle
+  AlertCircle,
+  Download,
+  AudioLines
 } from 'lucide-react';
+import {
+  sniffHex,
+  dataUriFromHex,
+  downloadHex,
+  type BlobMediaType,
+} from './lib/blobMedia';
 import { basicSetup } from 'codemirror';
 import { sql as sqlLanguage } from '@codemirror/lang-sql';
 import { EditorState, Compartment } from '@codemirror/state';
@@ -434,7 +442,8 @@ export default function App() {
   const [selectedTable, setSelectedTable] = useState<TableInfo | null>(null);
   const [schema, setSchema] = useState<TableSchema | null>(null);
   const [schemaError, setSchemaError] = useState<string | null>(null);
-  const [blobModal, setBlobModal] = useState<{ column: string; hex: string } | null>(null);
+  const [blobModal, setBlobModal] = useState<{ column: string; hex: string; type: BlobMediaType } | null>(null);
+  const [blobModalView, setBlobModalView] = useState<'preview' | 'hex'>('preview');
   const [rowsData, setRowsData] = useState<RowsData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -1614,11 +1623,38 @@ export default function App() {
                               }
 
                               if (isBlob && val !== null) {
-                                const bytesCount = typeof val === 'string' ? Math.ceil(val.length / 2) : 0;
+                                const hex = String(val);
+                                const bytesCount = Math.ceil(hex.length / 2);
+                                const mediaType = sniffHex(hex);
+                                const openModal = () => {
+                                  setBlobModalView(mediaType === 'unknown' ? 'hex' : 'preview');
+                                  setBlobModal({ column: colName, hex, type: mediaType });
+                                };
+                                if (mediaType !== 'unknown') {
+                                  return (
+                                    <td key={cIdx} className="px-3 py-1.5">
+                                      <button
+                                        onClick={openModal}
+                                        title={`BLOB (${bytesCount} bytes)`}
+                                        className="inline-flex items-center justify-center w-9 h-9 rounded border border-slate-200 dark:border-slate-750 bg-slate-50 dark:bg-slate-800/60 overflow-hidden hover:border-indigo-400 dark:hover:border-indigo-500 transition-colors"
+                                      >
+                                        {mediaType === 'wav' ? (
+                                          <AudioLines className="w-4 h-4 text-indigo-500 dark:text-indigo-400" />
+                                        ) : (
+                                          <img
+                                            src={dataUriFromHex(hex, mediaType)}
+                                            alt={colName}
+                                            className="max-w-full max-h-full object-contain"
+                                          />
+                                        )}
+                                      </button>
+                                    </td>
+                                  );
+                                }
                                 return (
                                   <td key={cIdx} className="px-3 py-1.5">
                                     <button
-                                      onClick={() => setBlobModal({ column: colName, hex: String(val) })}
+                                      onClick={openModal}
                                       className="text-amber-600 dark:text-amber-400 underline decoration-dotted hover:text-amber-500 dark:hover:text-amber-300"
                                     >
                                       BLOB ({bytesCount} bytes)
@@ -2973,7 +3009,7 @@ export default function App() {
         </main>
       </div>
 
-      {/* BLOB HEX VIEWER MODAL */}
+      {/* BLOB HEX/PREVIEW VIEWER MODAL */}
       {blobModal && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
@@ -2995,13 +3031,73 @@ export default function App() {
                 ✕
               </button>
             </div>
+
+            {blobModal.type !== 'unknown' && (
+              <div className="flex items-center gap-1 px-4 pt-3">
+                <button
+                  onClick={() => setBlobModalView('preview')}
+                  className={`px-2.5 py-1 rounded text-xs font-medium ${
+                    blobModalView === 'preview'
+                      ? 'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400'
+                      : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/60'
+                  }`}
+                >
+                  Preview
+                </button>
+                <button
+                  onClick={() => setBlobModalView('hex')}
+                  className={`px-2.5 py-1 rounded text-xs font-medium ${
+                    blobModalView === 'hex'
+                      ? 'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400'
+                      : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/60'
+                  }`}
+                >
+                  Raw hex
+                </button>
+              </div>
+            )}
+
             <div className="p-4">
-              <pre className="font-mono text-xs bg-slate-900 text-slate-100 rounded-lg p-4 overflow-auto border border-slate-800 max-h-96 whitespace-pre">
-                {formatHexDump(blobModal.hex)}
-              </pre>
-              <p className="mt-2 text-xs text-slate-400">
-                {Math.ceil(blobModal.hex.length / 2).toLocaleString()} bytes
-              </p>
+              {blobModal.type !== 'unknown' && blobModalView === 'preview' ? (
+                <div
+                  className="flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-800 p-4 min-h-48"
+                  style={
+                    blobModal.type !== 'wav'
+                      ? {
+                          backgroundImage:
+                            'repeating-conic-gradient(#cbd5e1 0% 25%, #f8fafc 0% 50%)',
+                          backgroundSize: '16px 16px',
+                        }
+                      : undefined
+                  }
+                >
+                  {blobModal.type === 'wav' ? (
+                    <audio controls src={dataUriFromHex(blobModal.hex, blobModal.type)} className="w-full" />
+                  ) : (
+                    <img
+                      src={dataUriFromHex(blobModal.hex, blobModal.type)}
+                      alt={blobModal.column}
+                      className="max-w-full max-h-96 object-contain"
+                    />
+                  )}
+                </div>
+              ) : (
+                <pre className="font-mono text-xs bg-slate-900 text-slate-100 rounded-lg p-4 overflow-auto border border-slate-800 max-h-96 whitespace-pre">
+                  {formatHexDump(blobModal.hex)}
+                </pre>
+              )}
+              <div className="mt-2 flex items-center justify-between">
+                <p className="text-xs text-slate-400">
+                  {Math.ceil(blobModal.hex.length / 2).toLocaleString()} bytes
+                </p>
+                <button
+                  onClick={() => downloadHex(blobModal.hex, blobModal.column, blobModal.type)}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/60 border border-slate-200 dark:border-slate-750"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  Download
+                </button>
+              </div>
             </div>
           </div>
         </div>

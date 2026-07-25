@@ -20,8 +20,11 @@ import {
   Layers,
   SquareFunction,
   Boxes,
+  Image as ImageIcon,
+  AudioLines,
   type LucideIcon,
 } from 'lucide-react';
+import { sniffBase64, dataUriFromBase64, type BlobMediaType } from '../lib/blobMedia';
 
 type OptionKind = 'int' | 'float' | 'bool' | 'string' | 'datetime' | 'select' | 'columns';
 
@@ -80,6 +83,7 @@ const GROUP_PRESENTATION: Record<string, { label: string; icon: LucideIcon }> = 
   novelty: { label: 'Novelty', icon: Sparkles },
   'domain-lookup': { label: 'Domain Lookup', icon: Layers },
   special: { label: 'Special', icon: Boxes },
+  media: { label: 'Media', icon: ImageIcon },
 };
 
 const FALLBACK_PRESENTATION = { label: '', icon: Boxes };
@@ -150,6 +154,7 @@ function GeneratorCard({
 }) {
   const [sample, setSample] = useState<string | null>(null);
   const [fetched, setFetched] = useState(false);
+  const [sampleAffinity, setSampleAffinity] = useState<string | null>(null);
   const presentation = groupPresentation(gen.group);
   const Icon = presentation.icon;
 
@@ -162,8 +167,14 @@ function GeneratorCard({
     setFetched(true);
     const affinity = gen.affinities.includes(targetAffinity) ? targetAffinity : gen.affinities[0];
     if (!affinity) return;
+    setSampleAffinity(affinity);
     fetchSample(gen.name, affinity).then((s) => setSample(s));
   };
+
+  // For BLOB samples, Go's json.Marshal encodes []byte as base64 — sniff and
+  // render a thumbnail instead of dumping the raw base64 text.
+  const blobMediaType: BlobMediaType | null =
+    sampleAffinity === 'BLOB' && sample ? sniffBase64(sample) : null;
 
   useEffect(() => {
     if (highlighted) load();
@@ -200,7 +211,23 @@ function GeneratorCard({
         )}
       </div>
       {gen.description && <span className="text-slate-400">{gen.description}</span>}
-      {sample !== null && sample !== '' && (
+      {sample !== null && sample !== '' && blobMediaType && blobMediaType !== 'unknown' && (
+        <span className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400">
+          →
+          <span className="inline-flex items-center justify-center w-7 h-7 rounded border border-slate-200 dark:border-slate-750 bg-slate-50 dark:bg-slate-800/60 overflow-hidden shrink-0">
+            {blobMediaType === 'wav' ? (
+              <AudioLines className="w-3.5 h-3.5 text-indigo-500 dark:text-indigo-400" />
+            ) : (
+              <img
+                src={dataUriFromBase64(sample, blobMediaType)}
+                alt={gen.name}
+                className="max-w-full max-h-full object-contain"
+              />
+            )}
+          </span>
+        </span>
+      )}
+      {sample !== null && sample !== '' && !blobMediaType && (
         <span className="text-slate-500 dark:text-slate-400 font-mono truncate">→ {sample}</span>
       )}
     </button>

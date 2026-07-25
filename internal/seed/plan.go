@@ -229,9 +229,50 @@ func nameHeuristic(col db.ColumnInfo) (string, map[string]any) {
 		return "stateAbr", map[string]any{}
 	case strings.Contains(lower, "state"):
 		return "state", map[string]any{}
-	default:
-		return "", nil
 	}
+
+	// BLOB-only heuristics for the media generators (M6b). These run only
+	// for BLOB-affinity columns, after all the checks above and before the
+	// typeFallback default of "bytes" for BLOB.
+	if affinity == "BLOB" {
+		switch {
+		case hasWholeToken(lower, "qr"):
+			return "qrCode", map[string]any{}
+		case strings.Contains(lower, "barcode"), strings.Contains(lower, "upc"), strings.Contains(lower, "ean"):
+			return "barcode", map[string]any{}
+		case strings.Contains(lower, "avatar"), strings.Contains(lower, "photo"), strings.Contains(lower, "profile_pic"),
+			strings.Contains(lower, "profilepicture"), strings.Contains(lower, "headshot"):
+			return "profilePicture", map[string]any{}
+		case strings.Contains(lower, "svg"):
+			return "svgImage", map[string]any{}
+		case strings.Contains(lower, "icon"):
+			return "icon", map[string]any{}
+		case strings.Contains(lower, "audio"), strings.Contains(lower, "sound"), strings.Contains(lower, "clip"):
+			return "soundData", map[string]any{}
+		}
+	}
+
+	return "", nil
+}
+
+// hasWholeToken reports whether tok appears in lower as a standalone token,
+// i.e. surrounded by non-alphanumeric separators (or the string bounds).
+// This avoids e.g. matching "qr" inside an unrelated word.
+func hasWholeToken(lower, tok string) bool {
+	isSep := func(b byte) bool {
+		return !(b >= 'a' && b <= 'z' || b >= '0' && b <= '9')
+	}
+	for i := 0; i+len(tok) <= len(lower); i++ {
+		if lower[i:i+len(tok)] != tok {
+			continue
+		}
+		beforeOK := i == 0 || isSep(lower[i-1])
+		afterOK := i+len(tok) == len(lower) || isSep(lower[i+len(tok)])
+		if beforeOK && afterOK {
+			return true
+		}
+	}
+	return false
 }
 
 func typeFallback(col db.ColumnInfo) (string, map[string]any) {

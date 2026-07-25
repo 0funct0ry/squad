@@ -197,6 +197,7 @@ func buildRegistry() map[string]GeneratorDef {
 	defs = append(defs, domainGenerators()...)
 	defs = append(defs, sequenceGenerators()...)
 	defs = append(defs, formulaGenerators()...)
+	defs = append(defs, mediaGenerators()...)
 
 	m := make(map[string]GeneratorDef, len(defs))
 	for _, d := range defs {
