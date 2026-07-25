@@ -94,7 +94,7 @@ func GetTables(db *sql.DB) ([]TableInfo, error) {
 	}
 	defer rows.Close()
 
-	var tables []TableInfo
+	tables := make([]TableInfo, 0)
 	for rows.Next() {
 		var name, ttype string
 		if err := rows.Scan(&name, &ttype); err != nil {

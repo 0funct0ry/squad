@@ -19,6 +19,8 @@ import { basicSetup } from 'codemirror';
 import { sql as sqlLanguage } from '@codemirror/lang-sql';
 import { EditorState, Compartment } from '@codemirror/state';
 import { EditorView, keymap } from '@codemirror/view';
+import GeneratorPicker from './components/GeneratorPicker';
+import GeneratorOptionsForm from './components/GeneratorOptionsForm';
 
 interface MetaData {
   name: string;
@@ -104,9 +106,34 @@ interface SeedColumnPlan {
   uniqueGroup?: string[];
 }
 
+type OptionKind = 'int' | 'float' | 'bool' | 'string' | 'datetime' | 'select' | 'columns';
+
+interface OptionField {
+  key: string;
+  label: string;
+  kind: OptionKind;
+  default?: unknown;
+  choices?: string[];
+  min?: number;
+  max?: number;
+  required?: boolean;
+  description?: string;
+}
+
+interface GeneratorMeta {
+  name: string;
+  group: string;
+  aliases?: string[];
+  description?: string;
+  affinities: string[];
+  optionsSchema?: OptionField[];
+  stateful?: boolean;
+}
+
 interface SeedPlan {
   columns: SeedColumnPlan[];
   availableGenerators: string[];
+  generatorCatalog: GeneratorMeta[];
 }
 
 interface SeedColumnSelection {
@@ -469,6 +496,9 @@ export default function App() {
   const [seedPlanError, setSeedPlanError] = useState<string | null>(null);
   const [seedSelections, setSeedSelections] = useState<Record<string, SeedColumnSelection>>({});
   const [seedOverrides, setSeedOverrides] = useState<Record<string, boolean>>({});
+  const [generatorPickerColumn, setGeneratorPickerColumn] = useState<string | null>(null);
+  const [recentlyUsedGenerators, setRecentlyUsedGenerators] = useState<string[]>([]);
+  const [seedGeneratorSamples, setSeedGeneratorSamples] = useState<Record<string, string>>({});
   const [seedCount, setSeedCount] = useState<number>(1000);
   const [seedPreviewRows, setSeedPreviewRows] = useState<Record<string, any>[] | null>(null);
   const [seedPreviewLoading, setSeedPreviewLoading] = useState<boolean>(false);
@@ -490,16 +520,17 @@ export default function App() {
       fetch('/api/tables').then(res => res.json())
     ])
       .then(([metaBody, tablesBody]) => {
-        if (metaBody.ok && metaBody.data) {
-          setMeta(metaBody.data);
+        if (metaBody.ok) {
+          setMeta(metaBody.data ?? null);
         } else {
           throw new Error(metaBody.error?.message || 'Failed to fetch database metadata');
         }
 
-        if (tablesBody.ok && tablesBody.data) {
-          setTables(tablesBody.data);
-          if (!selectedTable && tablesBody.data.length > 0) {
-            setSelectedTable(tablesBody.data[0]);
+        if (tablesBody.ok) {
+          const tableList = tablesBody.data ?? [];
+          setTables(tableList);
+          if (!selectedTable && tableList.length > 0) {
+            setSelectedTable(tableList[0]);
           }
         } else {
           throw new Error(tablesBody.error?.message || 'Failed to fetch database tables');
@@ -546,6 +577,12 @@ export default function App() {
         },
         ...prev,
       ]);
+      if (data.rowsAffected > 0) {
+        fetchMetaAndTables();
+        setRefetchTrigger((prev) => prev + 1);
+        setToast({ message: `${data.rowsAffected} row${data.rowsAffected === 1 ? '' : 's'} affected`, type: 'success' });
+        setTimeout(() => setToast(null), 3000);
+      }
     } catch (err: any) {
       let code = 'SQL_ERROR';
       let message = err.message;
@@ -783,6 +820,17 @@ export default function App() {
     }
   };
 
+  // Standard SQLite type-affinity rules (see SPEC.md), used to drive the
+  // GeneratorPicker's default type-compatibility filtering.
+  const sqliteAffinity = (type: string): string => {
+    const t = (type || '').toUpperCase();
+    if (t.includes('INT')) return 'INTEGER';
+    if (t.includes('CHAR') || t.includes('CLOB') || t.includes('TEXT')) return 'TEXT';
+    if (t.includes('BLOB') || t === '') return 'BLOB';
+    if (t.includes('REAL') || t.includes('FLOA') || t.includes('DOUB')) return 'REAL';
+    return 'NUMERIC';
+  };
+
   const defaultGeneratorForType = (type: string): string => {
     const t = type.toUpperCase();
     if (t.includes('INT')) return 'int';
@@ -804,6 +852,7 @@ export default function App() {
 
   const updateSeedGenerator = (colName: string, generator: string) => {
     setSeedSelections((prev) => ({ ...prev, [colName]: { generator, options: {} } }));
+    setRecentlyUsedGenerators((prev) => [generator, ...prev.filter((g) => g !== generator)].slice(0, 8));
   };
 
   const updateSeedOption = (colName: string, key: string, value: any) => {
@@ -825,6 +874,35 @@ export default function App() {
     });
     return payload;
   };
+
+  const generatorMetaByName = (name: string): GeneratorMeta | undefined =>
+    seedPlan?.generatorCatalog.find((g) => g.name === name);
+
+  // Fetch (once per column+generator pair, cached in state) the live sample
+  // value shown next to the generator-picker trigger button. Skipped for
+  // foreignKey/formula, which the sample endpoint rejects (need row context).
+  useEffect(() => {
+    if (!seedPlan) return;
+    Object.entries(seedSelections).forEach(([colName, sel]) => {
+      if (!sel?.generator || sel.generator === 'foreignKey' || sel.generator === 'formula') return;
+      const cacheKey = `${colName}:${sel.generator}`;
+      if (seedGeneratorSamples[cacheKey] !== undefined) return;
+      const meta = generatorMetaByName(sel.generator);
+      if (!meta) return;
+      const col = seedPlan.columns.find((c) => c.name === colName);
+      const affinity = col && meta.affinities.includes(sqliteAffinity(col.type)) ? sqliteAffinity(col.type) : meta.affinities[0];
+      if (!affinity) return;
+      fetch(`/api/seed/generators/${encodeURIComponent(sel.generator)}/sample?affinity=${encodeURIComponent(affinity)}`)
+        .then((res) => res.json())
+        .then((body) => {
+          if (!body.ok) return;
+          const text = body.data?.sample === null || body.data?.sample === undefined ? '' : String(body.data.sample);
+          setSeedGeneratorSamples((prev) => ({ ...prev, [cacheKey]: text }));
+        })
+        .catch(() => {});
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seedSelections, seedPlan]);
 
   const handleSeedCountChange = (raw: string) => {
     const n = parseInt(raw, 10);
@@ -1091,6 +1169,9 @@ export default function App() {
     setSeedPreviewRows(null);
     setSeedError(null);
     setSeedPlanLoading(true);
+    setGeneratorPickerColumn(null);
+    setRecentlyUsedGenerators([]);
+    setSeedGeneratorSamples({});
 
     getSeedPlan(selectedTable.name)
       .then((plan) => {
@@ -1294,25 +1375,34 @@ export default function App() {
             Tables & Views
           </div>
           <nav className="flex-1 overflow-y-auto px-2 text-sm space-y-0.5">
-            {filteredTables.map((t) => (
-              <div
-                key={t.name}
-                onClick={() => setSelectedTable(t)}
-                className={`flex items-center justify-between px-2 py-1.5 rounded-md cursor-pointer ${
-                  selectedTable?.name === t.name
-                    ? 'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-300'
-                    : 'hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300'
-                }`}
-              >
-                <span className="flex items-center gap-2">
-                  <span className="text-slate-400 dark:text-slate-500">
-                    {t.type === 'view' ? '◫' : '▤'}
-                  </span>
-                  <span className="font-medium font-mono text-xs">{t.name}</span>
-                </span>
-                <span className="text-xs text-slate-400 font-mono">{t.rowCount.toLocaleString()}</span>
+            {tables.length === 0 ? (
+              <div className="flex flex-col items-center text-center gap-2 px-3 py-8 text-slate-400 dark:text-slate-600">
+                <Database className="w-6 h-6" />
+                <span className="text-xs">No tables yet</span>
               </div>
-            ))}
+            ) : filteredTables.length === 0 ? (
+              <div className="px-3 py-6 text-center text-xs text-slate-400">No tables match your search</div>
+            ) : (
+              filteredTables.map((t) => (
+                <div
+                  key={t.name}
+                  onClick={() => setSelectedTable(t)}
+                  className={`flex items-center justify-between px-2 py-1.5 rounded-md cursor-pointer ${
+                    selectedTable?.name === t.name
+                      ? 'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-300'
+                      : 'hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300'
+                  }`}
+                >
+                  <span className="flex items-center gap-2">
+                    <span className="text-slate-400 dark:text-slate-500">
+                      {t.type === 'view' ? '◫' : '▤'}
+                    </span>
+                    <span className="font-medium font-mono text-xs">{t.name}</span>
+                  </span>
+                  <span className="text-xs text-slate-400 font-mono">{t.rowCount.toLocaleString()}</span>
+                </div>
+              ))
+            )}
           </nav>
         </aside>
 
@@ -1346,6 +1436,39 @@ export default function App() {
           </div>
 
           <div className="flex-1 overflow-auto p-4">
+            {/* EMPTY DATABASE STATE */}
+            {['data', 'schema', 'seed', 'export'].includes(activeTab) && tables.length === 0 && (
+              <div className="flex-1 flex items-center justify-center p-8 h-full">
+                <div className="max-w-sm text-center flex flex-col items-center gap-3">
+                  <Database className="w-10 h-10 text-slate-300 dark:text-slate-700" />
+                  <h2 className="font-semibold text-slate-900 dark:text-white">No tables in this database</h2>
+                  <p className="text-sm text-slate-500 dark:text-slate-400">
+                    This database is empty. Create a table to get started, or run raw SQL DDL in the SQL Editor.
+                  </p>
+                  {isWrite ? (
+                    <div className="flex gap-2 mt-1">
+                      <button
+                        onClick={() => setActiveTab('editor')}
+                        className="px-3 py-1.5 rounded-md text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-500"
+                      >
+                        + Create New Table
+                      </button>
+                      <button
+                        onClick={() => setActiveTab('sql')}
+                        className="px-3 py-1.5 rounded-md text-xs font-medium border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+                      >
+                        Open SQL Editor
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                      Read-only mode — relaunch with <span className="font-mono">--write</span> to create tables.
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* DATA PANEL */}
             {activeTab === 'data' && selectedTable && (
               <section className="space-y-4 h-full flex flex-col min-h-0">
@@ -2357,7 +2480,7 @@ export default function App() {
                 <p className="text-sm text-slate-500 -mt-2">Generators auto-suggested from column name &amp; type.</p>
 
                 {!isWrite && (
-                  <div className="rounded-lg border border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-300 text-sm px-4 py-2.5 max-w-2xl">
+                  <div className="rounded-lg border border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-300 text-sm px-4 py-2.5 max-w-4xl">
                     Write mode is required to seed data. Relaunch with <code className="font-mono">--write</code>.
                   </div>
                 )}
@@ -2367,7 +2490,7 @@ export default function App() {
 
                 {seedPlan && (
                   <>
-                    <div className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden bg-white dark:bg-slate-900 max-w-2xl">
+                    <div className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden bg-white dark:bg-slate-900 max-w-4xl">
                       <table className="w-full text-sm">
                         <thead className="bg-slate-100 dark:bg-slate-800/60 text-slate-500 text-left">
                           <tr>
@@ -2413,99 +2536,32 @@ export default function App() {
                                   )}
                                 </td>
                                 <td className="px-3 py-2 align-top">
-                                  <select
-                                    value={sel?.generator || ''}
-                                    onChange={(e) => updateSeedGenerator(col.name, e.target.value)}
+                                  <button
+                                    type="button"
+                                    onClick={() => setGeneratorPickerColumn(col.name)}
                                     disabled={!isWrite || !active}
-                                    className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white font-mono text-xs outline-none"
+                                    className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white font-mono text-xs outline-none text-left disabled:opacity-50 disabled:cursor-not-allowed hover:border-indigo-400 flex flex-col"
                                   >
-                                    {seedPlan.availableGenerators.map((g) => (
-                                      <option key={g} value={g}>{g}</option>
-                                    ))}
-                                  </select>
+                                    <span>{sel?.generator || '—'}</span>
+                                    {sel?.generator && seedGeneratorSamples[`${col.name}:${sel.generator}`] && (
+                                      <span className="font-normal text-slate-400 truncate max-w-[10rem]">
+                                        → {seedGeneratorSamples[`${col.name}:${sel.generator}`]}
+                                      </span>
+                                    )}
+                                  </button>
                                 </td>
                                 <td className="px-3 py-2 align-top">
                                   {sel?.generator === 'foreignKey' ? (
                                     <span className="text-slate-400">
                                       {sel.options?.table}.{sel.options?.column}
                                     </span>
-                                  ) : sel?.generator === 'int' || sel?.generator === 'float' || sel?.generator === 'price' ? (
-                                    <div className="flex items-center gap-1">
-                                      <input
-                                        type="number"
-                                        placeholder="min"
-                                        value={sel.options?.min ?? ''}
-                                        onChange={(e) => updateSeedOption(col.name, 'min', e.target.value === '' ? undefined : Number(e.target.value))}
-                                        disabled={!isWrite}
-                                        className="w-16 px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 outline-none"
-                                      />
-                                      <span className="text-slate-400">–</span>
-                                      <input
-                                        type="number"
-                                        placeholder="max"
-                                        value={sel.options?.max ?? ''}
-                                        onChange={(e) => updateSeedOption(col.name, 'max', e.target.value === '' ? undefined : Number(e.target.value))}
-                                        disabled={!isWrite}
-                                        className="w-16 px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 outline-none"
-                                      />
-                                    </div>
-                                  ) : sel?.generator === 'datetime' ? (
-                                    <div className="flex items-center gap-1 flex-wrap">
-                                      <input
-                                        type="text"
-                                        placeholder="from (RFC3339)"
-                                        value={sel.options?.from ?? ''}
-                                        onChange={(e) => updateSeedOption(col.name, 'from', e.target.value || undefined)}
-                                        disabled={!isWrite}
-                                        className="w-32 px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 outline-none"
-                                      />
-                                      <input
-                                        type="text"
-                                        placeholder="to (RFC3339)"
-                                        value={sel.options?.to ?? ''}
-                                        onChange={(e) => updateSeedOption(col.name, 'to', e.target.value || undefined)}
-                                        disabled={!isWrite}
-                                        className="w-32 px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 outline-none"
-                                      />
-                                      <label className="flex items-center gap-1 text-slate-400">
-                                        <input
-                                          type="checkbox"
-                                          checked={!!sel.options?.onlyDate}
-                                          onChange={(e) => updateSeedOption(col.name, 'onlyDate', e.target.checked)}
-                                          disabled={!isWrite}
-                                        />
-                                        date only
-                                      </label>
-                                    </div>
-                                  ) : sel?.generator === 'sentence' ? (
-                                    <input
-                                      type="number"
-                                      placeholder="words"
-                                      value={sel.options?.wordCount ?? ''}
-                                      onChange={(e) => updateSeedOption(col.name, 'wordCount', e.target.value === '' ? undefined : Number(e.target.value))}
-                                      disabled={!isWrite}
-                                      className="w-20 px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 outline-none"
-                                    />
-                                  ) : sel?.generator === 'paragraph' ? (
-                                    <input
-                                      type="number"
-                                      placeholder="sentences"
-                                      value={sel.options?.sentences ?? ''}
-                                      onChange={(e) => updateSeedOption(col.name, 'sentences', e.target.value === '' ? undefined : Number(e.target.value))}
-                                      disabled={!isWrite}
-                                      className="w-20 px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 outline-none"
-                                    />
-                                  ) : sel?.generator === 'bytes' ? (
-                                    <input
-                                      type="number"
-                                      placeholder="length"
-                                      value={sel.options?.length ?? ''}
-                                      onChange={(e) => updateSeedOption(col.name, 'length', e.target.value === '' ? undefined : Number(e.target.value))}
-                                      disabled={!isWrite}
-                                      className="w-20 px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 outline-none"
-                                    />
                                   ) : (
-                                    <span className="text-slate-300 dark:text-slate-700">—</span>
+                                    <GeneratorOptionsForm
+                                      schema={generatorMetaByName(sel?.generator || '')?.optionsSchema || []}
+                                      values={sel?.options || {}}
+                                      onChange={(key, value) => updateSeedOption(col.name, key, value)}
+                                      siblingColumns={seedPlan.columns.map((c) => c.name)}
+                                    />
                                   )}
                                 </td>
                               </tr>
@@ -2553,11 +2609,11 @@ export default function App() {
                     </div>
 
                     {seedError && (
-                      <p className="text-sm text-rose-500 max-w-2xl">{seedError}</p>
+                      <p className="text-sm text-rose-500 max-w-4xl">{seedError}</p>
                     )}
 
                     {seedPreviewRows && (
-                      <div className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-auto bg-white dark:bg-slate-900 max-w-2xl">
+                      <div className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-auto bg-white dark:bg-slate-900 max-w-4xl">
                         <table className="w-full text-xs font-mono">
                           <thead className="bg-slate-100 dark:bg-slate-800/60 text-slate-500 text-left">
                             <tr>
@@ -2950,6 +3006,22 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* GENERATOR PICKER MODAL */}
+      {generatorPickerColumn && seedPlan && (() => {
+        const col = seedPlan.columns.find((c) => c.name === generatorPickerColumn);
+        const sel = seedSelections[generatorPickerColumn];
+        return (
+          <GeneratorPicker
+            catalog={seedPlan.generatorCatalog}
+            currentGenerator={sel?.generator || ''}
+            targetAffinity={col ? sqliteAffinity(col.type) : 'TEXT'}
+            recentlyUsed={recentlyUsedGenerators}
+            onSelect={(name) => updateSeedGenerator(generatorPickerColumn, name)}
+            onClose={() => setGeneratorPickerColumn(null)}
+          />
+        );
+      })()}
 
       {/* TOAST SYSTEM */}
       {toast && (

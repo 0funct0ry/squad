@@ -1,8 +1,36 @@
 package seed
 
 import (
+	"regexp"
+	"strings"
 	"testing"
 )
+
+var uuidRegexp = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+func TestGuidAndUuid_ShapeParity(t *testing.T) {
+	u, err := Generate("uuid", "TEXT", map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := Generate("guid", "TEXT", map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	us, ok := u.(string)
+	if !ok || !uuidRegexp.MatchString(us) {
+		t.Errorf("uuid did not match UUID shape: %v", u)
+	}
+	gs, ok := g.(string)
+	if !ok || !uuidRegexp.MatchString(gs) {
+		t.Errorf("guid did not match UUID shape: %v", g)
+	}
+}
+
+// expectedGeneratorCount pins the total number of registered generators
+// (including foreignKey) after the M6a registry expansion. Update this
+// alongside any future registry_*.go additions.
+const expectedGeneratorCount = 199
 
 func TestAvailableGeneratorsIncludesForeignKey(t *testing.T) {
 	names := AvailableGenerators()
@@ -26,40 +54,76 @@ func TestExists(t *testing.T) {
 	}
 }
 
-func TestGenerateBasicGenerators(t *testing.T) {
-	cases := []struct {
-		name     string
-		affinity string
-	}{
-		{"email", "TEXT"},
-		{"firstName", "TEXT"},
-		{"lastName", "TEXT"},
-		{"name", "TEXT"},
-		{"username", "TEXT"},
-		{"uuid", "TEXT"},
-		{"url", "TEXT"},
-		{"phone", "TEXT"},
-		{"sentence", "TEXT"},
-		{"word", "TEXT"},
-		{"paragraph", "TEXT"},
-		{"company", "TEXT"},
-		{"address", "TEXT"},
-		{"city", "TEXT"},
-		{"country", "TEXT"},
-		{"zipCode", "TEXT"},
-		{"ipv4", "TEXT"},
-		{"int", "INTEGER"},
-		{"float", "REAL"},
-		{"price", "REAL"},
-		{"bytes", "BLOB"},
-	}
-	for _, tc := range cases {
-		v, err := Generate(tc.name, tc.affinity, map[string]any{})
-		if err != nil {
-			t.Errorf("%s: unexpected error: %v", tc.name, err)
+// typeMatchesAffinity reports whether v's Go type is a plausible binding for
+// the given SQLite affinity, allowing the small set of numeric/string Go
+// types our generators actually return (int, int64, float32, float64,
+// string, []byte).
+func typeMatchesAffinity(v any, affinity string) bool {
+	switch affinity {
+	case "TEXT":
+		_, ok := v.(string)
+		return ok
+	case "INTEGER":
+		switch v.(type) {
+		case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+			return true
 		}
-		if v == nil {
-			t.Errorf("%s: expected a non-nil value", tc.name)
+		return false
+	case "REAL", "NUMERIC":
+		switch v.(type) {
+		case float32, float64:
+			return true
+		}
+		return false
+	case "BLOB":
+		_, ok := v.([]byte)
+		return ok
+	default:
+		return true
+	}
+}
+
+// TestGenerateAllRegisteredGenerators exercises every non-special generator
+// returned by AvailableGenerators() (i.e. everything except foreignKey,
+// which requires live DB access, and any Stateful generator, which requires
+// a RowGenerator). It asserts no error, a non-nil result, and that the
+// result's Go type is a plausible match for at least one of the generator's
+// declared affinities.
+func TestGenerateAllRegisteredGenerators(t *testing.T) {
+	names := AvailableGenerators()
+	if len(names) != expectedGeneratorCount {
+		t.Fatalf("expected %d registered generators, got %d: %v", expectedGeneratorCount, len(names), names)
+	}
+
+	for _, name := range names {
+		if name == ForeignKeyGeneratorName || name == "formula" {
+			continue
+		}
+		meta, ok := GeneratorMetaByName(name)
+		if !ok {
+			t.Errorf("%s: GeneratorMetaByName returned not-found for a name from AvailableGenerators", name)
+			continue
+		}
+		if meta.Stateful {
+			continue
+		}
+		if len(meta.Affinities) == 0 {
+			t.Errorf("%s: expected at least one declared affinity", name)
+			continue
+		}
+		for _, affinity := range meta.Affinities {
+			v, err := Generate(name, affinity, map[string]any{})
+			if err != nil {
+				t.Errorf("%s/%s: unexpected error: %v", name, affinity, err)
+				continue
+			}
+			if v == nil {
+				t.Errorf("%s/%s: expected a non-nil value", name, affinity)
+				continue
+			}
+			if !typeMatchesAffinity(v, affinity) {
+				t.Errorf("%s/%s: value %v (%T) does not match declared affinity", name, affinity, v, v)
+			}
 		}
 	}
 }
@@ -115,5 +179,19 @@ func TestGenerateRangeOptions(t *testing.T) {
 	}
 	if v.(int) != 5 {
 		t.Errorf("expected exact min=max=5, got %v", v)
+	}
+}
+
+func TestGenerateSentenceRespectsWordCount(t *testing.T) {
+	for _, wc := range []int{1, 2, 3, 8, 15} {
+		v, err := Generate("sentence", "TEXT", map[string]any{"wordCount": wc})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := v.(string)
+		words := strings.Fields(strings.TrimSuffix(s, "."))
+		if len(words) != wc {
+			t.Errorf("wordCount=%d: expected %d words, got %d in %q", wc, wc, len(words), s)
+		}
 	}
 }

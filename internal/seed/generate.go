@@ -9,6 +9,10 @@ import (
 	"github.com/0funct0ry/squad/internal/db"
 )
 
+// sequenceState holds the mutable per-column counter state for the 4
+// stateful generators (sequence, rowNumber, characterSequence, digitSequence).
+type sequenceState struct{ next int64 }
+
 // ColumnSpec is the caller-supplied generator + options for one column,
 // as sent in POST .../seed's `columns` map.
 type ColumnSpec struct {
@@ -39,6 +43,9 @@ type RowGenerator struct {
 	columns        map[string]ColumnSpec
 	relevantGroups [][]string
 	seen           map[string]map[string]bool
+	orderedColumns []string
+	formulaDeps    map[string][]string
+	seqState       map[string]*sequenceState
 }
 
 // NewRowGenerator prepares a generator for the given column specs: it samples
@@ -87,6 +94,28 @@ func NewRowGenerator(sqlDB *sql.DB, schema *db.TableSchema, columns map[string]C
 		relevantGroups = append(relevantGroups, group)
 	}
 
+	formulaDeps := buildFormulaDeps(columns)
+	orderedColumns, err := topoSortColumns(columns, formulaDeps)
+	if err != nil {
+		return nil, err
+	}
+
+	seqState := make(map[string]*sequenceState)
+	for colName, spec := range columns {
+		if !statefulGeneratorNames[spec.Generator] {
+			continue
+		}
+		var defaultStart int64
+		switch spec.Generator {
+		case "rowNumber":
+			defaultStart = 1
+		default:
+			defaultStart = 0
+		}
+		start := optInt(spec.Options, "start", int(defaultStart))
+		seqState[colName] = &sequenceState{next: int64(start)}
+	}
+
 	return &RowGenerator{
 		schema:         schema,
 		colAffinity:    colAffinity,
@@ -94,6 +123,9 @@ func NewRowGenerator(sqlDB *sql.DB, schema *db.TableSchema, columns map[string]C
 		columns:        columns,
 		relevantGroups: relevantGroups,
 		seen:           make(map[string]map[string]bool),
+		orderedColumns: orderedColumns,
+		formulaDeps:    formulaDeps,
+		seqState:       seqState,
 	}, nil
 }
 
@@ -104,15 +136,67 @@ func (g *RowGenerator) UniqueGroups() [][]string {
 	return g.relevantGroups
 }
 
-func (g *RowGenerator) generateValue(colName string, spec ColumnSpec) (any, error) {
+func (g *RowGenerator) generateValue(colName string, spec ColumnSpec, rowSoFar map[string]any) (any, error) {
 	if spec.Generator == ForeignKeyGeneratorName {
 		table, _ := spec.Options["table"].(string)
 		column, _ := spec.Options["column"].(string)
 		pool := g.fkPools[table+"\x00"+column]
 		return pool.values[rand.Intn(len(pool.values))], nil
 	}
+	if spec.Generator == "formula" {
+		return g.evalFormula(colName, spec, rowSoFar)
+	}
+	if st, ok := g.seqState[colName]; ok {
+		return g.generateStateful(spec, st)
+	}
 	affinity := g.colAffinity[colName]
 	return Generate(spec.Generator, affinity, spec.Options)
+}
+
+// generateStateful produces the next value for one of the 4 stateful
+// generators and advances its counter by the configured step.
+func (g *RowGenerator) generateStateful(spec ColumnSpec, st *sequenceState) (any, error) {
+	step := int64(optInt(spec.Options, "step", 1))
+	cur := st.next
+	st.next += step
+
+	switch spec.Generator {
+	case "sequence", "rowNumber":
+		format := optString(spec.Options, "format", "")
+		if format != "" {
+			return fmt.Sprintf(format, cur), nil
+		}
+		return cur, nil
+	case "characterSequence":
+		return characterSequenceLabel(cur), nil
+	case "digitSequence":
+		width := optInt(spec.Options, "width", 6)
+		s := fmt.Sprintf("%d", cur)
+		if len(s) < width {
+			s = strings.Repeat("0", width-len(s)) + s
+		}
+		return s, nil
+	default:
+		return nil, fmt.Errorf("unknown stateful generator: %s", spec.Generator)
+	}
+}
+
+// characterSequenceLabel converts a 0-based index into a base-26 letter
+// label: 0->"A", 25->"Z", 26->"AA", 27->"AB", ... (spreadsheet-column style).
+func characterSequenceLabel(n int64) string {
+	if n < 0 {
+		n = 0
+	}
+	var b []byte
+	for {
+		rem := n % 26
+		b = append([]byte{byte('A' + rem)}, b...)
+		n = n/26 - 1
+		if n < 0 {
+			break
+		}
+	}
+	return string(b)
 }
 
 // GenerateRow produces one row, applying the in-memory unique pre-check
@@ -120,8 +204,9 @@ func (g *RowGenerator) generateValue(colName string, spec ColumnSpec) (any, erro
 // this request).
 func (g *RowGenerator) GenerateRow() (map[string]any, error) {
 	row := make(map[string]any, len(g.columns))
-	for colName, spec := range g.columns {
-		v, err := g.generateValue(colName, spec)
+	for _, colName := range g.orderedColumns {
+		spec := g.columns[colName]
+		v, err := g.generateValue(colName, spec, row)
 		if err != nil {
 			return nil, err
 		}
@@ -160,7 +245,7 @@ func (g *RowGenerator) RegenerateGroup(row map[string]any, group []string) error
 		if !ok {
 			continue
 		}
-		v, err := g.generateValue(colName, spec)
+		v, err := g.generateValue(colName, spec, row)
 		if err != nil {
 			return err
 		}

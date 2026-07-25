@@ -117,12 +117,12 @@ func init() {
 	rootCmd.SetVersionTemplate(fmt.Sprintf("squad version %s (commit: %s)\n", Version, CommitSHA))
 
 	// Bind flags to Config struct
-	rootCmd.Flags().StringVar(&cfg.Addr, "addr", "127.0.0.1", "Bind address")
-	rootCmd.Flags().IntVar(&cfg.Port, "port", 7071, "Port to listen on")
-	rootCmd.Flags().BoolVar(&cfg.Write, "write", false, "Enable mutations (DDL, DML, write operations)")
-	rootCmd.Flags().BoolVar(&cfg.Rest, "rest", false, "Enable auto REST endpoints for tables")
-	rootCmd.Flags().BoolVar(&cfg.Open, "open", true, "Auto-open default browser on start")
-	rootCmd.Flags().BoolVar(&cfg.ReadOnlyPragma, "read-only-pragma", true, "Open SQLite with mode=ro when not --write")
-	rootCmd.Flags().StringVar(&cfg.Token, "token", "", "Optional bearer token gate for the API")
-	rootCmd.Flags().StringVar(&cfg.LogLevel, "log-level", "info", "Log level (debug/info/warn/error)")
+	rootCmd.Flags().StringVarP(&cfg.Addr, "addr", "a", "127.0.0.1", "Bind address")
+	rootCmd.Flags().IntVarP(&cfg.Port, "port", "p", 7071, "Port to listen on")
+	rootCmd.Flags().BoolVarP(&cfg.Write, "write", "w", false, "Enable mutations (DDL, DML, write operations)")
+	rootCmd.Flags().BoolVarP(&cfg.Rest, "rest", "r", false, "Enable auto REST endpoints for tables")
+	rootCmd.Flags().BoolVarP(&cfg.Open, "open", "o", true, "Auto-open default browser on start")
+	rootCmd.Flags().BoolVarP(&cfg.ReadOnlyPragma, "read-only-pragma", "R", true, "Open SQLite with mode=ro when not --write")
+	rootCmd.Flags().StringVarP(&cfg.Token, "token", "t", "", "Optional bearer token gate for the API")
+	rootCmd.Flags().StringVarP(&cfg.LogLevel, "log-level", "l", "info", "Log level (debug/info/warn/error)")
 }

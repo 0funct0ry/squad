@@ -182,3 +182,35 @@ func TestBuildPlan_SoloUniqueColumn(t *testing.T) {
 		t.Errorf("expected isbn to have a solo uniqueGroup, got %v", isbn.UniqueGroup)
 	}
 }
+
+func TestNameHeuristic_M6aNewRules(t *testing.T) {
+	cases := []struct {
+		colName string
+		colType string
+		wantGen string
+	}{
+		{"ssn", "TEXT", "ssn"},
+		{"employee_ssn", "TEXT", "ssn"},
+		{"ethnicity", "TEXT", "ethnicity"},
+		{"gender", "TEXT", "gender"},
+		{"latitude", "REAL", "latitude"},
+		{"lat", "REAL", "latitude"},
+		{"longitude", "REAL", "longitude"},
+		{"lng", "REAL", "longitude"},
+		{"lon", "REAL", "longitude"},
+		{"ip6_address", "TEXT", "ipv6"},
+		{"ipv6_addr", "TEXT", "ipv6"},
+		{"credit_card_number", "TEXT", "creditCardNumber"},
+		{"creditcard", "TEXT", "creditCardNumber"},
+		{"card_number", "TEXT", "creditCardNumber"},
+		{"age", "INTEGER", "age"},
+		{"state", "TEXT", "state"},
+		{"state_abr", "TEXT", "stateAbr"},
+	}
+	for _, tc := range cases {
+		gen, _ := nameHeuristic(db.ColumnInfo{Name: tc.colName, Type: tc.colType})
+		if gen != tc.wantGen {
+			t.Errorf("nameHeuristic(%q): expected %q, got %q", tc.colName, tc.wantGen, gen)
+		}
+	}
+}

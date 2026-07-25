@@ -15,6 +15,15 @@ import (
 func OpenDB(path string, readOnly bool) (*sql.DB, error) {
 	dsn := path
 	if readOnly {
+		// In read-only mode, SQLite's own mode=ro URI handling refuses to
+		// create a missing file, which otherwise surfaces as an opaque
+		// "unable to open database file (14)" error. Check up front so we
+		// can give a clear, actionable message instead.
+		if dsn != ":memory:" && !strings.HasPrefix(dsn, "file:") {
+			if _, statErr := os.Stat(dsn); os.IsNotExist(statErr) {
+				return nil, fmt.Errorf("database file %q does not exist (use --write to create it)", dsn)
+			}
+		}
 		// SQLite expects URI filename for query parameters like mode=ro
 		if !strings.HasPrefix(dsn, "file:") && dsn != ":memory:" {
 			dsn = "file:" + dsn + "?mode=ro"

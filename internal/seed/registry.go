@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/brianvoe/gofakeit/v7"
@@ -16,12 +17,57 @@ import (
 // bool, or []byte).
 type GeneratorFunc func(affinity string, opts map[string]any) (any, error)
 
+// OptionKind identifies the UI control used to edit a generator option.
+type OptionKind string
+
+const (
+	OptKindInt      OptionKind = "int"
+	OptKindFloat    OptionKind = "float"
+	OptKindBool     OptionKind = "bool"
+	OptKindString   OptionKind = "string"
+	OptKindDateTime OptionKind = "datetime" // RFC3339 wire format, matches optTime
+	OptKindSelect   OptionKind = "select"
+	OptKindColumns  OptionKind = "columns" // formula-only: multi-select of sibling column names
+)
+
+// OptionField describes one declarative, UI-renderable option for a generator.
+type OptionField struct {
+	Key         string     `json:"key"`
+	Label       string     `json:"label"`
+	Kind        OptionKind `json:"kind"`
+	Default     any        `json:"default,omitempty"`
+	Choices     []string   `json:"choices,omitempty"`
+	Min         *float64   `json:"min,omitempty"` // UI hint only
+	Max         *float64   `json:"max,omitempty"` // UI hint only
+	Required    bool       `json:"required,omitempty"`
+	Description string     `json:"description,omitempty"`
+}
+
 // GeneratorDef describes one entry in the generator registry.
 type GeneratorDef struct {
-	Name       string
-	Affinities []string
-	Fn         GeneratorFunc
+	Name          string
+	Group         string   // category group, e.g. "person", "geo"
+	Aliases       []string // alternate names resolving to this generator
+	Description   string   // picker card description
+	Affinities    []string
+	OptionsSchema []OptionField // nil = no options
+	Stateful      bool          // true only for sequence/rowNumber/characterSequence/digitSequence
+	Fn            GeneratorFunc
 }
+
+// GeneratorMeta is the JSON-serializable projection of a GeneratorDef used by
+// the generatorCatalog API field.
+type GeneratorMeta struct {
+	Name          string        `json:"name"`
+	Group         string        `json:"group"`
+	Aliases       []string      `json:"aliases,omitempty"`
+	Description   string        `json:"description,omitempty"`
+	Affinities    []string      `json:"affinities"`
+	OptionsSchema []OptionField `json:"optionsSchema,omitempty"`
+	Stateful      bool          `json:"stateful,omitempty"`
+}
+
+func floatPtr(f float64) *float64 { return &f }
 
 // ForeignKeyGeneratorName is handled specially by the server/generate layer
 // (it needs live DB access to sample referenced values), but is still listed
@@ -33,77 +79,96 @@ var registry = buildRegistry()
 
 func buildRegistry() map[string]GeneratorDef {
 	defs := []GeneratorDef{
-		{Name: "email", Affinities: []string{"TEXT"}, Fn: func(string, map[string]any) (any, error) {
+		{Name: "email", Group: "person", Description: "Email address", Affinities: []string{"TEXT"}, Fn: func(string, map[string]any) (any, error) {
 			return gofakeit.Email(), nil
 		}},
-		{Name: "firstName", Affinities: []string{"TEXT"}, Fn: func(string, map[string]any) (any, error) {
+		{Name: "firstName", Group: "person", Description: "First name", Affinities: []string{"TEXT"}, Fn: func(string, map[string]any) (any, error) {
 			return gofakeit.FirstName(), nil
 		}},
-		{Name: "lastName", Affinities: []string{"TEXT"}, Fn: func(string, map[string]any) (any, error) {
+		{Name: "lastName", Group: "person", Description: "Last name", Affinities: []string{"TEXT"}, Fn: func(string, map[string]any) (any, error) {
 			return gofakeit.LastName(), nil
 		}},
-		{Name: "name", Affinities: []string{"TEXT"}, Fn: func(string, map[string]any) (any, error) {
+		{Name: "name", Group: "person", Description: "Full name", Affinities: []string{"TEXT"}, Fn: func(string, map[string]any) (any, error) {
 			return gofakeit.Name(), nil
 		}},
-		{Name: "username", Affinities: []string{"TEXT"}, Fn: func(string, map[string]any) (any, error) {
+		{Name: "username", Group: "person", Description: "Username", Affinities: []string{"TEXT"}, Fn: func(string, map[string]any) (any, error) {
 			return gofakeit.Username(), nil
 		}},
-		{Name: "uuid", Affinities: []string{"TEXT"}, Fn: func(string, map[string]any) (any, error) {
+		{Name: "uuid", Group: "identifier", Description: "UUID v4", Affinities: []string{"TEXT"}, Fn: func(string, map[string]any) (any, error) {
 			return gofakeit.UUID(), nil
 		}},
-		{Name: "datetime", Affinities: []string{"TEXT", "INTEGER"}, Fn: genDatetime},
-		{Name: "price", Affinities: []string{"REAL", "NUMERIC"}, Fn: func(_ string, opts map[string]any) (any, error) {
+		{Name: "datetime", Group: "datetime", Description: "Date/time within a range", Affinities: []string{"TEXT", "INTEGER"}, OptionsSchema: []OptionField{
+			{Key: "from", Label: "From", Kind: OptKindDateTime},
+			{Key: "to", Label: "To", Kind: OptKindDateTime},
+			{Key: "onlyDate", Label: "Only date", Kind: OptKindBool, Default: false},
+		}, Fn: genDatetime},
+		{Name: "price", Group: "numeric", Description: "Price between min and max", Affinities: []string{"REAL", "NUMERIC"}, OptionsSchema: []OptionField{
+			{Key: "min", Label: "Min", Kind: OptKindFloat, Default: 1.0},
+			{Key: "max", Label: "Max", Kind: OptKindFloat, Default: 1000.0},
+		}, Fn: func(_ string, opts map[string]any) (any, error) {
 			min := optFloat(opts, "min", 1)
 			max := optFloat(opts, "max", 1000)
 			return gofakeit.Price(min, max), nil
 		}},
-		{Name: "url", Affinities: []string{"TEXT"}, Fn: func(string, map[string]any) (any, error) {
+		{Name: "url", Group: "internet", Description: "URL", Affinities: []string{"TEXT"}, Fn: func(string, map[string]any) (any, error) {
 			return gofakeit.URL(), nil
 		}},
-		{Name: "phone", Affinities: []string{"TEXT"}, Fn: func(string, map[string]any) (any, error) {
+		{Name: "phone", Group: "person", Description: "Phone number", Affinities: []string{"TEXT"}, Fn: func(string, map[string]any) (any, error) {
 			return gofakeit.Phone(), nil
 		}},
-		{Name: "bool", Affinities: []string{"INTEGER", "TEXT"}, Fn: genBool},
-		{Name: "sentence", Affinities: []string{"TEXT"}, Fn: func(_ string, opts map[string]any) (any, error) {
+		{Name: "bool", Group: "misc", Description: "Boolean value", Affinities: []string{"INTEGER", "TEXT"}, Fn: genBool},
+		{Name: "sentence", Group: "text", Description: "Sentence with a given word count", Affinities: []string{"TEXT"}, OptionsSchema: []OptionField{
+			{Key: "wordCount", Label: "Word count", Kind: OptKindInt, Default: 8},
+		}, Fn: func(_ string, opts map[string]any) (any, error) {
 			wordCount := optInt(opts, "wordCount", 8)
-			return gofakeit.Sentence(wordCount), nil
+			return sentenceWithWordCount(wordCount), nil
 		}},
-		{Name: "word", Affinities: []string{"TEXT"}, Fn: func(string, map[string]any) (any, error) {
+		{Name: "word", Group: "text", Description: "Single word", Affinities: []string{"TEXT"}, Fn: func(string, map[string]any) (any, error) {
 			return gofakeit.Word(), nil
 		}},
-		{Name: "paragraph", Affinities: []string{"TEXT"}, Fn: func(_ string, opts map[string]any) (any, error) {
+		{Name: "paragraph", Group: "text", Description: "Paragraph with a given sentence count", Affinities: []string{"TEXT"}, OptionsSchema: []OptionField{
+			{Key: "sentences", Label: "Sentences", Kind: OptKindInt, Default: 3},
+		}, Fn: func(_ string, opts map[string]any) (any, error) {
 			sentences := optInt(opts, "sentences", 3)
 			return gofakeit.LoremIpsumParagraph(1, sentences, 10, " "), nil
 		}},
-		{Name: "int", Affinities: []string{"INTEGER"}, Fn: func(_ string, opts map[string]any) (any, error) {
+		{Name: "int", Group: "numeric", Description: "Integer between min and max", Affinities: []string{"INTEGER"}, OptionsSchema: []OptionField{
+			{Key: "min", Label: "Min", Kind: OptKindInt, Default: 0},
+			{Key: "max", Label: "Max", Kind: OptKindInt, Default: 10000},
+		}, Fn: func(_ string, opts map[string]any) (any, error) {
 			min := optInt(opts, "min", 0)
 			max := optInt(opts, "max", 10000)
 			return gofakeit.IntRange(min, max), nil
 		}},
-		{Name: "float", Affinities: []string{"REAL", "NUMERIC"}, Fn: func(_ string, opts map[string]any) (any, error) {
+		{Name: "float", Group: "numeric", Description: "Float between min and max", Affinities: []string{"REAL", "NUMERIC"}, OptionsSchema: []OptionField{
+			{Key: "min", Label: "Min", Kind: OptKindFloat, Default: 0.0},
+			{Key: "max", Label: "Max", Kind: OptKindFloat, Default: 1000.0},
+		}, Fn: func(_ string, opts map[string]any) (any, error) {
 			min := optFloat(opts, "min", 0)
 			max := optFloat(opts, "max", 1000)
 			return gofakeit.Float64Range(min, max), nil
 		}},
-		{Name: "company", Affinities: []string{"TEXT"}, Fn: func(string, map[string]any) (any, error) {
+		{Name: "company", Group: "company", Description: "Company name", Affinities: []string{"TEXT"}, Fn: func(string, map[string]any) (any, error) {
 			return gofakeit.Company(), nil
 		}},
-		{Name: "address", Affinities: []string{"TEXT"}, Fn: func(string, map[string]any) (any, error) {
+		{Name: "address", Group: "geo", Description: "Street address", Affinities: []string{"TEXT"}, Fn: func(string, map[string]any) (any, error) {
 			return gofakeit.Address().Address, nil
 		}},
-		{Name: "city", Affinities: []string{"TEXT"}, Fn: func(string, map[string]any) (any, error) {
+		{Name: "city", Group: "geo", Description: "City name", Affinities: []string{"TEXT"}, Fn: func(string, map[string]any) (any, error) {
 			return gofakeit.City(), nil
 		}},
-		{Name: "country", Affinities: []string{"TEXT"}, Fn: func(string, map[string]any) (any, error) {
+		{Name: "country", Group: "geo", Description: "Country name", Affinities: []string{"TEXT"}, Fn: func(string, map[string]any) (any, error) {
 			return gofakeit.Country(), nil
 		}},
-		{Name: "zipCode", Affinities: []string{"TEXT"}, Fn: func(string, map[string]any) (any, error) {
+		{Name: "zipCode", Group: "geo", Description: "Zip / postal code", Affinities: []string{"TEXT"}, Fn: func(string, map[string]any) (any, error) {
 			return gofakeit.Zip(), nil
 		}},
-		{Name: "ipv4", Affinities: []string{"TEXT"}, Fn: func(string, map[string]any) (any, error) {
+		{Name: "ipv4", Group: "internet", Description: "IPv4 address", Affinities: []string{"TEXT"}, Fn: func(string, map[string]any) (any, error) {
 			return gofakeit.IPv4Address(), nil
 		}},
-		{Name: "bytes", Affinities: []string{"BLOB"}, Fn: func(_ string, opts map[string]any) (any, error) {
+		{Name: "bytes", Group: "identifier", Description: "Random byte string", Affinities: []string{"BLOB"}, OptionsSchema: []OptionField{
+			{Key: "length", Label: "Length", Kind: OptKindInt, Default: 16},
+		}, Fn: func(_ string, opts map[string]any) (any, error) {
 			length := optInt(opts, "length", 16)
 			b := make([]byte, length)
 			if _, err := rand.Read(b); err != nil {
@@ -111,11 +176,33 @@ func buildRegistry() map[string]GeneratorDef {
 			}
 			return b, nil
 		}},
-		{Name: ForeignKeyGeneratorName, Affinities: nil, Fn: nil},
+		{Name: ForeignKeyGeneratorName, Group: "special", Description: "Reference an existing row in another table", Affinities: nil, Fn: nil},
 	}
+
+	defs = append(defs, personGenerators()...)
+	defs = append(defs, geoGenerators()...)
+	defs = append(defs, datetimeGenerators()...)
+	defs = append(defs, numericGenerators()...)
+	defs = append(defs, internetGenerators()...)
+	defs = append(defs, financeGenerators()...)
+	defs = append(defs, companyGenerators()...)
+	defs = append(defs, colorGenerators()...)
+	defs = append(defs, textGenerators()...)
+	defs = append(defs, foodGenerators()...)
+	defs = append(defs, productGenerators()...)
+	defs = append(defs, identifierGenerators()...)
+	defs = append(defs, securityGenerators()...)
+	defs = append(defs, distributionGenerators()...)
+	defs = append(defs, noveltyGenerators()...)
+	defs = append(defs, domainGenerators()...)
+	defs = append(defs, sequenceGenerators()...)
+	defs = append(defs, formulaGenerators()...)
 
 	m := make(map[string]GeneratorDef, len(defs))
 	for _, d := range defs {
+		if _, dup := m[d.Name]; dup {
+			panic(fmt.Sprintf("seed: duplicate generator name %q", d.Name))
+		}
 		m[d.Name] = d
 	}
 	return m
@@ -167,6 +254,43 @@ func Exists(name string) bool {
 	return ok
 }
 
+// GeneratorCatalog returns the JSON-serializable metadata for every registered
+// generator, sorted by name, for the seed/plan API response.
+func GeneratorCatalog() []GeneratorMeta {
+	names := AvailableGenerators()
+	out := make([]GeneratorMeta, 0, len(names))
+	for _, name := range names {
+		d := registry[name]
+		out = append(out, GeneratorMeta{
+			Name:          d.Name,
+			Group:         d.Group,
+			Aliases:       d.Aliases,
+			Description:   d.Description,
+			Affinities:    d.Affinities,
+			OptionsSchema: d.OptionsSchema,
+			Stateful:      d.Stateful,
+		})
+	}
+	return out
+}
+
+// GeneratorMetaByName returns the metadata for a single generator by name.
+func GeneratorMetaByName(name string) (GeneratorMeta, bool) {
+	d, ok := registry[name]
+	if !ok {
+		return GeneratorMeta{}, false
+	}
+	return GeneratorMeta{
+		Name:          d.Name,
+		Group:         d.Group,
+		Aliases:       d.Aliases,
+		Description:   d.Description,
+		Affinities:    d.Affinities,
+		OptionsSchema: d.OptionsSchema,
+		Stateful:      d.Stateful,
+	}, true
+}
+
 // Generate produces a value for the named generator. It must not be called
 // with ForeignKeyGeneratorName; that generator is handled by the caller since
 // it requires live DB access to sample referenced values.
@@ -179,6 +303,23 @@ func Generate(name string, affinity string, opts map[string]any) (any, error) {
 		return nil, fmt.Errorf("generator %s must be handled by the caller", name)
 	}
 	return def.Fn(affinity, opts)
+}
+
+// sentenceWithWordCount builds a sentence of exactly wordCount words.
+// gofakeit.Sentence's wordCount parameter is a documented no-op in v7.15.0
+// (it always delegates to a fixed internal template regardless of the
+// argument), so word count is enforced here by joining that many
+// gofakeit.Word() calls instead.
+func sentenceWithWordCount(wordCount int) string {
+	if wordCount <= 0 {
+		wordCount = 1
+	}
+	words := make([]string, wordCount)
+	for i := range words {
+		words[i] = gofakeit.Word()
+	}
+	words[0] = strings.ToUpper(words[0][:1]) + words[0][1:]
+	return strings.Join(words, " ") + "."
 }
 
 func optFloat(opts map[string]any, key string, def float64) float64 {
@@ -216,6 +357,35 @@ func optBool(opts map[string]any, key string, def bool) bool {
 		}
 	}
 	return def
+}
+
+func optString(opts map[string]any, key string, def string) string {
+	if v, ok := opts[key]; ok {
+		if s, ok := v.(string); ok && s != "" {
+			return s
+		}
+	}
+	return def
+}
+
+func optStringSlice(opts map[string]any, key string) []string {
+	v, ok := opts[key]
+	if !ok {
+		return nil
+	}
+	switch s := v.(type) {
+	case []string:
+		return s
+	case []any:
+		out := make([]string, 0, len(s))
+		for _, e := range s {
+			if str, ok := e.(string); ok {
+				out = append(out, str)
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 func optTime(opts map[string]any, key string, def time.Time) time.Time {

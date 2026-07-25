@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -67,6 +68,7 @@ func (s *Server) handleSeedPlan(c *gin.Context) {
 		"data": gin.H{
 			"columns":             columns,
 			"availableGenerators": seed.AvailableGenerators(),
+			"generatorCatalog":    seed.GeneratorCatalog(),
 		},
 	})
 }
@@ -188,6 +190,14 @@ func (s *Server) handleSeedTable(c *gin.Context) {
 		specs[colName] = seed.ColumnSpec{Generator: colReq.Generator, Options: options}
 	}
 
+	if err := seed.ValidateFormulaDependencies(specs); err != nil {
+		c.JSON(400, gin.H{
+			"ok":    false,
+			"error": gin.H{"code": "BAD_REQUEST", "message": err.Error()},
+		})
+		return
+	}
+
 	gen, err := seed.NewRowGenerator(s.db, schema, specs)
 	if err != nil {
 		var emptyRef *seed.EmptyReferenceError
@@ -303,6 +313,83 @@ func (s *Server) handleSeedTable(c *gin.Context) {
 	c.JSON(200, gin.H{
 		"ok":   true,
 		"data": gin.H{"inserted": req.Count},
+	})
+}
+
+// GET /api/seed/generators/:name/sample
+func (s *Server) handleSeedGeneratorSample(c *gin.Context) {
+	name := c.Param("name")
+
+	meta, ok := seed.GeneratorMetaByName(name)
+	if !ok {
+		c.JSON(404, gin.H{
+			"ok":    false,
+			"error": gin.H{"code": "NOT_FOUND", "message": fmt.Sprintf("unknown generator: %s", name)},
+		})
+		return
+	}
+
+	if name == seed.ForeignKeyGeneratorName || name == "formula" {
+		c.JSON(400, gin.H{
+			"ok":    false,
+			"error": gin.H{"code": "BAD_REQUEST", "message": fmt.Sprintf("generator %s cannot be previewed without table/row context", name)},
+		})
+		return
+	}
+
+	affinity := c.Query("affinity")
+	if affinity == "" {
+		if len(meta.Affinities) == 0 {
+			c.JSON(400, gin.H{
+				"ok":    false,
+				"error": gin.H{"code": "BAD_REQUEST", "message": fmt.Sprintf("generator %s has no declared affinities", name)},
+			})
+			return
+		}
+		affinity = meta.Affinities[0]
+	} else {
+		found := false
+		for _, a := range meta.Affinities {
+			if a == affinity {
+				found = true
+				break
+			}
+		}
+		if !found {
+			c.JSON(400, gin.H{
+				"ok":    false,
+				"error": gin.H{"code": "BAD_REQUEST", "message": fmt.Sprintf("affinity %s is not valid for generator %s", affinity, name)},
+			})
+			return
+		}
+	}
+
+	opts := map[string]any{}
+	if raw := c.Query("options"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &opts); err != nil {
+			c.JSON(400, gin.H{
+				"ok":    false,
+				"error": gin.H{"code": "BAD_REQUEST", "message": fmt.Sprintf("malformed options JSON: %s", err.Error())},
+			})
+			return
+		}
+	}
+
+	sample, err := seed.GenerateSample(name, affinity, opts)
+	if err != nil {
+		c.JSON(400, gin.H{
+			"ok":    false,
+			"error": gin.H{"code": "BAD_REQUEST", "message": err.Error()},
+		})
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"ok": true,
+		"data": gin.H{
+			"sample":       sample,
+			"affinityUsed": affinity,
+		},
 	})
 }
 

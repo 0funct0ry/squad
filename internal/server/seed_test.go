@@ -512,3 +512,176 @@ func TestSeedReadOnlyGating(t *testing.T) {
 		t.Errorf("expected users row count unchanged, before=%d after=%d", before, after)
 	}
 }
+
+func TestSeedFormulaCycleRejected_ZeroRowsInserted(t *testing.T) {
+	dbPath := scratchExamplePath(t, "blog")
+	database, err := db.OpenDB(dbPath, false)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer database.Close()
+
+	srv := NewServer(database, dbPath, true)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client := ts.Client()
+
+	var before int
+	if err := database.QueryRow("SELECT COUNT(*) FROM posts").Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := doJSON(t, client, "POST", ts.URL+"/api/tables/posts/seed", map[string]any{
+		"count":  1,
+		"dryRun": false,
+		"columns": map[string]any{
+			"title": map[string]any{"generator": "formula", "options": map[string]any{
+				"columns": []any{"body"}, "expression": "body",
+			}},
+			"body": map[string]any{"generator": "formula", "options": map[string]any{
+				"columns": []any{"title"}, "expression": "title",
+			}},
+		},
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a formula cycle, got %d", resp.StatusCode)
+	}
+	res := parseResponse(t, resp)
+	if res.Error == nil || res.Error.Code != "BAD_REQUEST" {
+		t.Errorf("expected BAD_REQUEST, got %+v", res.Error)
+	}
+
+	var after int
+	if err := database.QueryRow("SELECT COUNT(*) FROM posts").Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if before != after {
+		t.Errorf("expected zero rows inserted, before=%d after=%d", before, after)
+	}
+}
+
+func TestSeedGeneratorSample_ValidPair(t *testing.T) {
+	dbPath := scratchExamplePath(t, "blog")
+	database, err := db.OpenDB(dbPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	srv := NewServer(database, dbPath, true)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client := ts.Client()
+
+	resp := doJSON(t, client, "GET", ts.URL+"/api/seed/generators/email/sample", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	res := parseResponse(t, resp)
+	if res.Data["sample"] == nil {
+		t.Errorf("expected a non-nil sample, got %+v", res.Data)
+	}
+	if res.Data["affinityUsed"] != "TEXT" {
+		t.Errorf("expected affinityUsed=TEXT, got %v", res.Data["affinityUsed"])
+	}
+}
+
+func TestSeedGeneratorSample_UnknownGenerator(t *testing.T) {
+	dbPath := scratchExamplePath(t, "blog")
+	database, err := db.OpenDB(dbPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	srv := NewServer(database, dbPath, true)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client := ts.Client()
+
+	resp := doJSON(t, client, "GET", ts.URL+"/api/seed/generators/nonsense/sample", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+	res := parseResponse(t, resp)
+	if res.Error == nil || res.Error.Code != "NOT_FOUND" {
+		t.Errorf("expected NOT_FOUND, got %+v", res.Error)
+	}
+}
+
+func TestSeedGeneratorSample_ForeignKeyAndFormulaRejected(t *testing.T) {
+	dbPath := scratchExamplePath(t, "blog")
+	database, err := db.OpenDB(dbPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	srv := NewServer(database, dbPath, true)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client := ts.Client()
+
+	for _, name := range []string{"foreignKey", "formula"} {
+		resp := doJSON(t, client, "GET", ts.URL+"/api/seed/generators/"+name+"/sample", nil)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: expected 400, got %d", name, resp.StatusCode)
+		}
+		res := parseResponse(t, resp)
+		if res.Error == nil || res.Error.Code != "BAD_REQUEST" {
+			t.Errorf("%s: expected BAD_REQUEST, got %+v", name, res.Error)
+		}
+	}
+}
+
+func TestSeedGeneratorSample_MalformedOptionsJSON(t *testing.T) {
+	dbPath := scratchExamplePath(t, "blog")
+	database, err := db.OpenDB(dbPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	srv := NewServer(database, dbPath, true)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client := ts.Client()
+
+	resp := doJSON(t, client, "GET", ts.URL+"/api/seed/generators/int/sample?options=not-json", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+	res := parseResponse(t, resp)
+	if res.Error == nil || res.Error.Code != "BAD_REQUEST" {
+		t.Errorf("expected BAD_REQUEST, got %+v", res.Error)
+	}
+}
+
+func TestSeedGeneratorSample_AffinityMismatch(t *testing.T) {
+	dbPath := scratchExamplePath(t, "blog")
+	database, err := db.OpenDB(dbPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	srv := NewServer(database, dbPath, true)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client := ts.Client()
+
+	resp := doJSON(t, client, "GET", ts.URL+"/api/seed/generators/email/sample?affinity=INTEGER", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+	res := parseResponse(t, resp)
+	if res.Error == nil || res.Error.Code != "BAD_REQUEST" {
+		t.Errorf("expected BAD_REQUEST, got %+v", res.Error)
+	}
+}

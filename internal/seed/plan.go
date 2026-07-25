@@ -195,6 +195,14 @@ func nameHeuristic(col db.ColumnInfo) (string, map[string]any) {
 		return "bool", map[string]any{}
 	case strings.Contains(lower, "company"):
 		return "company", map[string]any{}
+	// ethnicity/ipv6 are checked before the generic "address"/"city"/"ip"
+	// substring rules below, since "ethnicity" contains "city" and
+	// "ip6_address"/"ipv6_addr" contain "address" -- without this ordering
+	// the broader rules would shadow the more specific ones.
+	case strings.Contains(lower, "ethnicity"):
+		return "ethnicity", map[string]any{}
+	case strings.Contains(lower, "ip6"), strings.Contains(lower, "ipv6"):
+		return "ipv6", map[string]any{}
 	case strings.Contains(lower, "address"):
 		return "address", map[string]any{}
 	case strings.Contains(lower, "city"):
@@ -205,6 +213,22 @@ func nameHeuristic(col db.ColumnInfo) (string, map[string]any) {
 		return "zipCode", map[string]any{}
 	case lower == "ip", strings.Contains(lower, "ip_address"):
 		return "ipv4", map[string]any{}
+	case strings.Contains(lower, "ssn"):
+		return "ssn", map[string]any{}
+	case strings.Contains(lower, "gender"):
+		return "gender", map[string]any{}
+	case strings.Contains(lower, "lat"):
+		return "latitude", map[string]any{}
+	case strings.Contains(lower, "lng"), strings.Contains(lower, "lon"):
+		return "longitude", map[string]any{}
+	case strings.Contains(lower, "credit_card"), strings.Contains(lower, "creditcard"), strings.Contains(lower, "card_number"):
+		return "creditCardNumber", map[string]any{}
+	case strings.Contains(lower, "age"):
+		return "age", map[string]any{}
+	case strings.Contains(lower, "state_abr"), strings.Contains(lower, "stateabr"), strings.Contains(lower, "state_abbr"):
+		return "stateAbr", map[string]any{}
+	case strings.Contains(lower, "state"):
+		return "state", map[string]any{}
 	default:
 		return "", nil
 	}
