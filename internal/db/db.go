@@ -24,18 +24,29 @@ func OpenDB(path string, readOnly bool) (*sql.DB, error) {
 				return nil, fmt.Errorf("database file %q does not exist (use --write to create it)", dsn)
 			}
 		}
-		// SQLite expects URI filename for query parameters like mode=ro
-		if !strings.HasPrefix(dsn, "file:") && dsn != ":memory:" {
-			dsn = "file:" + dsn + "?mode=ro"
-		} else if dsn == ":memory:" {
-			dsn = "file::memory:?mode=ro"
-		} else {
-			if strings.Contains(dsn, "?") {
-				dsn = dsn + "&mode=ro"
-			} else {
-				dsn = dsn + "?mode=ro"
-			}
+	}
+
+	// SQLite expects a URI filename for query parameters like mode=ro or
+	// _pragma. database/sql pools multiple underlying connections, and each
+	// is opened independently by the driver, so a PRAGMA executed once after
+	// Ping only takes effect on that single connection — _pragma in the DSN
+	// is applied by the driver to every connection it opens, which is what
+	// foreign key enforcement (and mode=ro) actually needs.
+	params := []string{"_pragma=foreign_keys(1)"}
+	if readOnly {
+		params = append(params, "mode=ro")
+	}
+
+	if !strings.HasPrefix(dsn, "file:") && dsn != ":memory:" {
+		dsn = "file:" + dsn + "?" + strings.Join(params, "&")
+	} else if dsn == ":memory:" {
+		dsn = "file::memory:?" + strings.Join(params, "&")
+	} else {
+		sep := "?"
+		if strings.Contains(dsn, "?") {
+			sep = "&"
 		}
+		dsn = dsn + sep + strings.Join(params, "&")
 	}
 
 	db, err := sql.Open("sqlite", dsn)

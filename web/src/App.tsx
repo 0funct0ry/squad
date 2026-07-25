@@ -85,6 +85,37 @@ interface TriggerInfo {
   sql: string;
 }
 
+interface ForeignKeyDraft {
+  columns: string[];
+  refTable: string;
+  refColumns: string[];
+  onDelete: string;
+  onUpdate: string;
+  match: string;
+}
+
+const FK_ACTIONS = ['NO ACTION', 'RESTRICT', 'CASCADE', 'SET NULL', 'SET DEFAULT'];
+const FK_MATCH_MODES = ['NONE', 'SIMPLE', 'PARTIAL', 'FULL'];
+
+function emptyFkDraft(): ForeignKeyDraft {
+  return { columns: [], refTable: '', refColumns: [], onDelete: 'NO ACTION', onUpdate: 'NO ACTION', match: 'NONE' };
+}
+
+// isRefColumnsCovered mirrors the backend's rule that refColumns must be
+// covered by a primary key or unique index on the referenced table — used
+// only for a client-side hint, the backend remains the source of truth.
+function isRefColumnsCovered(refSchema: TableSchema | undefined, refColumns: string[]): boolean {
+  if (!refSchema || refColumns.length === 0) return true;
+  const wanted = refColumns.map(c => c.toLowerCase());
+  const pkSet = new Set(refSchema.primaryKey.map(c => c.toLowerCase()));
+  if (wanted.length === refSchema.primaryKey.length && wanted.every(c => pkSet.has(c))) return true;
+  return refSchema.indexes.some(idx => {
+    if (!idx.unique || idx.columns.length !== wanted.length) return false;
+    const idxSet = new Set(idx.columns.map(c => c.toLowerCase()));
+    return wanted.every(c => idxSet.has(c));
+  });
+}
+
 interface TableSchema {
   name: string;
   type: 'table' | 'view';
@@ -465,6 +496,8 @@ export default function App() {
   const [isCompositePk, setIsCompositePk] = useState<boolean>(false);
   const [compositePkColumns, setCompositePkColumns] = useState<string[]>([]);
   const [createTableError, setCreateTableError] = useState<string | null>(null);
+  const [newTableForeignKeys, setNewTableForeignKeys] = useState<ForeignKeyDraft[]>([]);
+  const [createFkErrors, setCreateFkErrors] = useState<Record<number, string>>({});
 
   // Table Editor alter states
   const [newTableNameInput, setNewTableNameInput] = useState<string>('');
@@ -474,6 +507,9 @@ export default function App() {
   const [addColDefault, setAddColDefault] = useState<string>('');
   const [renamingColumn, setRenamingColumn] = useState<Record<string, string>>({}); // originalName -> newName
   const [allSchemas, setAllSchemas] = useState<Record<string, TableSchema>>({});
+  const [addFk, setAddFk] = useState<ForeignKeyDraft>(emptyFkDraft());
+  const [addFkError, setAddFkError] = useState<string | null>(null);
+  const [dropFkConfirmation, setDropFkConfirmation] = useState<ForeignKeyInfo | null>(null);
 
   // Data grid inline CRUD states
   const [inlineAddRow, setInlineAddRow] = useState<Record<string, any> | null>(null);
@@ -667,6 +703,7 @@ export default function App() {
     e.preventDefault();
     if (!isWrite) return;
     setCreateTableError(null);
+    setCreateFkErrors({});
     try {
       const columns = newTableColumns.map(col => ({
         name: col.name,
@@ -686,21 +723,34 @@ export default function App() {
         body.primaryKey = compositePkColumns;
       }
 
+      if (newTableForeignKeys.length > 0) {
+        body.foreignKeys = newTableForeignKeys;
+      }
+
       await createTable(body);
       setToast({ message: `Table "${newTableName}" created successfully!`, type: 'success' });
       setTimeout(() => setToast(null), 3000);
-      
+
       // Reset form
       setNewTableName('');
       setNewTableColumns([{ name: 'id', type: 'INTEGER', pk: true, notnull: false, unique: false, defaultVal: '' }]);
       setIsCompositePk(false);
       setCompositePkColumns([]);
-      
+      setNewTableForeignKeys([]);
+
       fetchMetaAndTables();
       setSelectedTable({ name: newTableName, type: 'table', rowCount: 0 });
       setActiveTab('data');
     } catch (err: any) {
-      setCreateTableError(err.message || 'Failed to create table');
+      // Backend errors are prefixed "foreign key <index>: <message>" — route
+      // them to the specific FK row rather than the generic form banner.
+      const msg: string = err.message || 'Failed to create table';
+      const fkMatch = msg.match(/foreign key (\d+): (.+)$/i);
+      if (fkMatch) {
+        setCreateFkErrors({ [Number(fkMatch[1])]: fkMatch[2] });
+      } else {
+        setCreateTableError(msg);
+      }
     }
   };
 
@@ -804,6 +854,68 @@ export default function App() {
       if (body.ok) setSchema(body.data);
     } catch (err: any) {
       setToast({ message: err.message || 'Failed to drop column', type: 'error' });
+      setTimeout(() => setToast(null), 5000);
+    }
+  };
+
+  const handleAddForeignKeySubmit = async () => {
+    if (!selectedTable || !isWrite) return;
+    setAddFkError(null);
+    try {
+      await alterTable(selectedTable.name, {
+        op: 'add_foreign_key',
+        foreignKey: addFk
+      });
+      setToast({ message: 'Foreign key added successfully!', type: 'success' });
+      setTimeout(() => setToast(null), 3000);
+      setAddFk(emptyFkDraft());
+
+      // Reload schema
+      const res = await fetch(`/api/tables/${selectedTable.name}/schema`);
+      const body = await res.json();
+      if (body.ok) {
+        setSchema(body.data);
+        setAllSchemas(prev => ({ ...prev, [selectedTable.name]: body.data }));
+      }
+    } catch (err: any) {
+      setAddFkError(err.message || 'Failed to add foreign key');
+    }
+  };
+
+  const handleDropForeignKeyClick = async (fk: ForeignKeyInfo) => {
+    if (!selectedTable || !isWrite) return;
+    // Refetch schema first since foreign key ids are not stable across mutations.
+    const res = await fetch(`/api/tables/${selectedTable.name}/schema`);
+    const body = await res.json();
+    if (body.ok) {
+      setSchema(body.data);
+      const fresh = (body.data.foreignKeys as ForeignKeyInfo[]).find(
+        f => f.from === fk.from && f.table === fk.table && f.to === fk.to
+      );
+      setDropFkConfirmation(fresh || fk);
+    } else {
+      setDropFkConfirmation(fk);
+    }
+  };
+
+  const executeDropForeignKey = async (fk: ForeignKeyInfo) => {
+    if (!selectedTable || !isWrite) return;
+    try {
+      await alterTable(selectedTable.name, {
+        op: 'drop_foreign_key',
+        foreignKey: { id: fk.id }
+      });
+      setToast({ message: 'Foreign key dropped successfully!', type: 'success' });
+      setTimeout(() => setToast(null), 3000);
+
+      const res = await fetch(`/api/tables/${selectedTable.name}/schema`);
+      const body = await res.json();
+      if (body.ok) {
+        setSchema(body.data);
+        setAllSchemas(prev => ({ ...prev, [selectedTable.name]: body.data }));
+      }
+    } catch (err: any) {
+      setToast({ message: err.message || 'Failed to drop foreign key', type: 'error' });
       setTimeout(() => setToast(null), 5000);
     }
   };
@@ -1329,6 +1441,140 @@ export default function App() {
       setToast({ message: 'Copied to clipboard!', type: 'success' });
       setTimeout(() => setToast(null), 3000);
     });
+  };
+
+  const refTableOptions = tables.filter(t => t.type === 'table');
+
+  // Renders one repeatable foreign-key-entry row, shared by the Create
+  // Table form and the Alter panel's "Add Foreign Key" card.
+  const renderFkEntryRow = (
+    draft: ForeignKeyDraft,
+    localColumnOptions: string[],
+    onChange: (next: ForeignKeyDraft) => void,
+    onRemove: (() => void) | null,
+    error?: string
+  ) => {
+    const refSchema = draft.refTable ? allSchemas[draft.refTable] : undefined;
+    const covered = isRefColumnsCovered(refSchema, draft.refColumns);
+
+    return (
+      <div className="p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/40 space-y-2">
+        <div className="grid sm:grid-cols-2 gap-3">
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] uppercase font-semibold text-slate-400">Local column(s)</label>
+            <select
+              multiple
+              value={draft.columns}
+              onChange={(e) => {
+                const selected = Array.from(e.target.selectedOptions).map(o => o.value);
+                onChange({ ...draft, columns: selected });
+              }}
+              className="font-mono text-xs px-2 py-1.5 rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-900 dark:text-white outline-none min-h-16"
+            >
+              {localColumnOptions.map(c => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] uppercase font-semibold text-slate-400">References table</label>
+            <select
+              value={draft.refTable}
+              onChange={(e) => onChange({ ...draft, refTable: e.target.value, refColumns: [] })}
+              className="font-mono text-xs px-2 py-1.5 rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-900 dark:text-white outline-none"
+            >
+              <option value="">— select table —</option>
+              {refTableOptions.map(t => (
+                <option key={t.name} value={t.name}>{t.name}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="grid sm:grid-cols-2 gap-3">
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] uppercase font-semibold text-slate-400">References column(s)</label>
+            <select
+              multiple
+              disabled={!draft.refTable}
+              value={draft.refColumns}
+              onChange={(e) => {
+                const selected = Array.from(e.target.selectedOptions).map(o => o.value);
+                onChange({ ...draft, refColumns: selected });
+              }}
+              className="font-mono text-xs px-2 py-1.5 rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-900 dark:text-white outline-none min-h-16 disabled:opacity-50"
+            >
+              {(refSchema?.columns || []).map(c => {
+                const inPk = refSchema!.primaryKey.some(p => p.toLowerCase() === c.name.toLowerCase());
+                const inUnique = refSchema!.indexes.some(idx => idx.unique && idx.columns.some(ic => ic.toLowerCase() === c.name.toLowerCase()));
+                return (
+                  <option key={c.name} value={c.name} className={!inPk && !inUnique ? 'text-amber-500' : ''}>
+                    {c.name}{!inPk && !inUnique ? ' (not PK/unique)' : ''}
+                  </option>
+                );
+              })}
+            </select>
+            {draft.refTable && draft.refColumns.length > 0 && !covered && (
+              <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                Hint: refColumns should be part of a primary key or unique constraint on the target table.
+              </p>
+            )}
+            {draft.columns.length !== draft.refColumns.length && (draft.columns.length > 0 || draft.refColumns.length > 0) && (
+              <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                Local column count ({draft.columns.length}) must match reference column count ({draft.refColumns.length}).
+              </p>
+            )}
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] uppercase font-semibold text-slate-400">On Delete</label>
+              <select
+                value={draft.onDelete}
+                onChange={(e) => onChange({ ...draft, onDelete: e.target.value })}
+                className="font-mono text-xs px-2 py-1.5 rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-900 dark:text-white outline-none"
+              >
+                {FK_ACTIONS.map(a => <option key={a} value={a}>{a}</option>)}
+              </select>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] uppercase font-semibold text-slate-400">On Update</label>
+              <select
+                value={draft.onUpdate}
+                onChange={(e) => onChange({ ...draft, onUpdate: e.target.value })}
+                className="font-mono text-xs px-2 py-1.5 rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-900 dark:text-white outline-none"
+              >
+                {FK_ACTIONS.map(a => <option key={a} value={a}>{a}</option>)}
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <details className="text-xs">
+          <summary className="cursor-pointer text-slate-500 select-none">Advanced (MATCH)</summary>
+          <select
+            value={draft.match}
+            onChange={(e) => onChange({ ...draft, match: e.target.value })}
+            className="mt-2 font-mono text-xs px-2 py-1.5 rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-900 dark:text-white outline-none"
+          >
+            {FK_MATCH_MODES.map(m => <option key={m} value={m}>{m}</option>)}
+          </select>
+        </details>
+
+        {error && (
+          <div className="p-2 text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20 rounded-md">
+            {error}
+          </div>
+        )}
+
+        {onRemove && (
+          <div className="flex justify-end">
+            <button type="button" onClick={onRemove} className="text-red-500 hover:text-red-650 text-xs font-sans cursor-pointer">
+              × Remove
+            </button>
+          </div>
+        )}
+      </div>
+    );
   };
 
   return (
@@ -2274,6 +2520,31 @@ export default function App() {
                       </table>
                     </div>
 
+                    {/* Foreign Keys Section */}
+                    <div className="space-y-2">
+                      <h4 className="text-sm font-semibold text-slate-900 dark:text-white">Foreign Keys</h4>
+                      {newTableForeignKeys.map((fk, idx) => (
+                        <div key={idx}>
+                          {renderFkEntryRow(
+                            fk,
+                            newTableColumns.map(c => c.name).filter(Boolean),
+                            (next) => {
+                              setNewTableForeignKeys(prev => prev.map((f, i) => (i === idx ? next : f)));
+                            },
+                            () => setNewTableForeignKeys(prev => prev.filter((_, i) => i !== idx)),
+                            createFkErrors[idx]
+                          )}
+                        </div>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => setNewTableForeignKeys(prev => [...prev, emptyFkDraft()])}
+                        className="px-3 py-1.5 rounded-md border border-slate-200 dark:border-slate-800 text-xs font-semibold hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+                      >
+                        + Add Foreign Key
+                      </button>
+                    </div>
+
                     <div className="flex items-center gap-3">
                       <button
                         type="button"
@@ -2470,6 +2741,65 @@ export default function App() {
                             </tbody>
                           </table>
                         </div>
+                      </div>
+
+                      {/* Foreign Keys Card */}
+                      <div className="p-4 rounded-xl border border-slate-205 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm space-y-3">
+                        <h4 className="text-sm font-semibold text-slate-900 dark:text-white">Foreign Keys</h4>
+                        <div className="border border-slate-100 dark:border-slate-800 rounded-lg overflow-hidden">
+                          <table className="w-full text-sm">
+                            <thead className="bg-slate-50 dark:bg-slate-800/40 text-slate-500 text-left">
+                              <tr>
+                                <th className="px-3 py-2 font-medium">Column</th>
+                                <th className="px-3 py-2 font-medium">References</th>
+                                <th className="px-3 py-2 font-medium">On Delete / On Update</th>
+                                <th className="px-3 py-2 text-right">Actions</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-mono text-xs text-slate-700 dark:text-slate-300">
+                              {(!schema?.foreignKeys || schema.foreignKeys.length === 0) ? (
+                                <tr>
+                                  <td colSpan={4} className="px-3 py-3 text-slate-400 italic font-sans">
+                                    No foreign keys defined.
+                                  </td>
+                                </tr>
+                              ) : (
+                                schema.foreignKeys.map((fk, idx) => (
+                                  <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-900/30">
+                                    <td className="px-3 py-2 font-semibold">{fk.from}</td>
+                                    <td className="px-3 py-2 text-indigo-650 dark:text-indigo-400">{fk.table}.{fk.to}</td>
+                                    <td className="px-3 py-2 text-slate-500">{fk.onDelete} / {fk.onUpdate}</td>
+                                    <td className="px-3 py-2 text-right font-sans">
+                                      <button
+                                        onClick={() => handleDropForeignKeyClick(fk)}
+                                        title="Drop Foreign Key"
+                                        className="text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 p-1.5 rounded transition-colors inline-flex items-center justify-center cursor-pointer"
+                                      >
+                                        <Trash2 className="w-4 h-4" />
+                                      </button>
+                                    </td>
+                                  </tr>
+                                ))
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        <h5 className="text-xs font-semibold text-slate-500 pt-2">Add Foreign Key</h5>
+                        {renderFkEntryRow(
+                          addFk,
+                          (schema?.columns || []).map(c => c.name),
+                          setAddFk,
+                          null,
+                          addFkError || undefined
+                        )}
+                        <button
+                          onClick={handleAddForeignKeySubmit}
+                          disabled={addFk.columns.length === 0 || addFk.refColumns.length === 0 || !addFk.refTable}
+                          className="px-3 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer shadow"
+                        >
+                          Add Foreign Key
+                        </button>
                       </div>
 
                       {/* Danger Zone */}
@@ -3225,6 +3555,57 @@ export default function App() {
                   className="px-3 py-1.5 rounded-md bg-red-600 hover:bg-red-500 text-white text-xs font-semibold shadow cursor-pointer"
                 >
                   Drop Column
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* DROP FOREIGN KEY CONFIRMATION MODAL */}
+      {dropFkConfirmation && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setDropFkConfirmation(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-lg border border-slate-205 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+              <h3 className="font-semibold text-slate-900 dark:text-white flex items-center gap-1.5">
+                <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" /> Confirm Drop Foreign Key
+              </h3>
+              <button
+                onClick={() => setDropFkConfirmation(null)}
+                className="text-slate-400 hover:text-slate-500 dark:hover:text-slate-300"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="p-4 space-y-4">
+              <p className="text-sm text-slate-650 dark:text-slate-350 font-sans">
+                Are you sure you want to drop the foreign key{' '}
+                <span className="font-semibold font-mono text-indigo-650 dark:text-indigo-400">
+                  {dropFkConfirmation.from} → {dropFkConfirmation.table}.{dropFkConfirmation.to}
+                </span>?
+                This requires rebuilding the table. This action cannot be undone.
+              </p>
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={() => setDropFkConfirmation(null)}
+                  className="px-3 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-850 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    executeDropForeignKey(dropFkConfirmation);
+                    setDropFkConfirmation(null);
+                  }}
+                  className="px-3 py-1.5 rounded-md bg-red-600 hover:bg-red-500 text-white text-xs font-semibold shadow cursor-pointer"
+                >
+                  Drop Foreign Key
                 </button>
               </div>
             </div>

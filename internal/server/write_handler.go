@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/0funct0ry/squad/internal/db"
@@ -124,10 +125,168 @@ type CreateTableColumn struct {
 	Default *string `json:"default"`
 }
 
+type CreateTableForeignKey struct {
+	Columns    []string `json:"columns"`
+	RefTable   string   `json:"refTable"`
+	RefColumns []string `json:"refColumns"`
+	OnDelete   string   `json:"onDelete"`
+	OnUpdate   string   `json:"onUpdate"`
+	Match      string   `json:"match"`
+}
+
 type CreateTableRequest struct {
-	Name       string              `json:"name"`
-	Columns    []CreateTableColumn `json:"columns"`
-	PrimaryKey []string            `json:"primaryKey"`
+	Name        string                  `json:"name"`
+	Columns     []CreateTableColumn     `json:"columns"`
+	PrimaryKey  []string                `json:"primaryKey"`
+	ForeignKeys []CreateTableForeignKey `json:"foreignKeys"`
+}
+
+var validFKActions = map[string]bool{
+	"NO ACTION":   true,
+	"RESTRICT":    true,
+	"CASCADE":     true,
+	"SET NULL":    true,
+	"SET DEFAULT": true,
+}
+
+var validFKMatch = map[string]bool{
+	"NONE":    true,
+	"SIMPLE":  true,
+	"PARTIAL": true,
+	"FULL":    true,
+}
+
+// validateForeignKey checks a single foreign key entry against the local table's
+// column set and the referenced table's schema, returning a descriptive error
+// naming the specific validation failure, or nil if the entry is valid. It also
+// returns the normalized (defaulted) onDelete/onUpdate/match values.
+func validateForeignKey(fk CreateTableForeignKey, localColumns map[string]bool, refSchema *db.TableSchema) (onDelete, onUpdate, match string, err error) {
+	if len(fk.Columns) == 0 || len(fk.RefColumns) == 0 {
+		return "", "", "", fmt.Errorf("foreign key must specify at least one column and refColumns")
+	}
+	if len(fk.Columns) != len(fk.RefColumns) {
+		return "", "", "", fmt.Errorf("foreign key columns and refColumns must be the same length")
+	}
+
+	seenLocal := make(map[string]bool)
+	for _, c := range fk.Columns {
+		lower := strings.ToLower(c)
+		if seenLocal[lower] {
+			return "", "", "", fmt.Errorf("duplicate column %q in foreign key", c)
+		}
+		seenLocal[lower] = true
+		if !localColumns[lower] {
+			return "", "", "", fmt.Errorf("foreign key column %q not found in table", c)
+		}
+	}
+
+	if refSchema.Type == "view" {
+		return "", "", "", fmt.Errorf("foreign key refTable %q must be a table, not a view", refSchema.Name)
+	}
+
+	refColMap := make(map[string]bool)
+	for _, c := range refSchema.Columns {
+		refColMap[strings.ToLower(c.Name)] = true
+	}
+
+	seenRef := make(map[string]bool)
+	for _, c := range fk.RefColumns {
+		lower := strings.ToLower(c)
+		if seenRef[lower] {
+			return "", "", "", fmt.Errorf("duplicate refColumn %q in foreign key", c)
+		}
+		seenRef[lower] = true
+		if !refColMap[lower] {
+			return "", "", "", fmt.Errorf("refColumn %q not found on table %q", c, refSchema.Name)
+		}
+	}
+
+	// refColumns must be covered by a PK or a unique index on refTable
+	pkSet := make(map[string]bool)
+	for _, c := range refSchema.PrimaryKey {
+		pkSet[strings.ToLower(c)] = true
+	}
+	coveredByPK := len(refSchema.PrimaryKey) == len(fk.RefColumns)
+	if coveredByPK {
+		for _, c := range fk.RefColumns {
+			if !pkSet[strings.ToLower(c)] {
+				coveredByPK = false
+				break
+			}
+		}
+	}
+
+	coveredByUnique := false
+	if !coveredByPK {
+		for _, idx := range refSchema.Indexes {
+			if !idx.Unique || len(idx.Columns) != len(fk.RefColumns) {
+				continue
+			}
+			idxSet := make(map[string]bool)
+			for _, c := range idx.Columns {
+				idxSet[strings.ToLower(c)] = true
+			}
+			match := true
+			for _, c := range fk.RefColumns {
+				if !idxSet[strings.ToLower(c)] {
+					match = false
+					break
+				}
+			}
+			if match {
+				coveredByUnique = true
+				break
+			}
+		}
+	}
+
+	if !coveredByPK && !coveredByUnique {
+		return "", "", "", fmt.Errorf("refColumns %v on table %q must be covered by a primary key or unique constraint", fk.RefColumns, refSchema.Name)
+	}
+
+	onDelete = strings.ToUpper(strings.TrimSpace(fk.OnDelete))
+	if onDelete == "" {
+		onDelete = "NO ACTION"
+	}
+	if !validFKActions[onDelete] {
+		return "", "", "", fmt.Errorf("invalid onDelete value: %q", fk.OnDelete)
+	}
+
+	onUpdate = strings.ToUpper(strings.TrimSpace(fk.OnUpdate))
+	if onUpdate == "" {
+		onUpdate = "NO ACTION"
+	}
+	if !validFKActions[onUpdate] {
+		return "", "", "", fmt.Errorf("invalid onUpdate value: %q", fk.OnUpdate)
+	}
+
+	match = strings.ToUpper(strings.TrimSpace(fk.Match))
+	if match == "" {
+		match = "NONE"
+	}
+	if !validFKMatch[match] {
+		return "", "", "", fmt.Errorf("invalid match value: %q", fk.Match)
+	}
+
+	return onDelete, onUpdate, match, nil
+}
+
+// buildForeignKeyClause renders a validated foreign key entry as a table-level
+// FOREIGN KEY (...) REFERENCES ... clause, omitting MATCH when it's the default NONE.
+func buildForeignKeyClause(fk CreateTableForeignKey, onDelete, onUpdate, match string) string {
+	var localCols, refCols []string
+	for _, c := range fk.Columns {
+		localCols = append(localCols, db.QuoteIdentifier(c))
+	}
+	for _, c := range fk.RefColumns {
+		refCols = append(refCols, db.QuoteIdentifier(c))
+	}
+	clause := fmt.Sprintf("FOREIGN KEY (%s) REFERENCES %s (%s) ON DELETE %s ON UPDATE %s",
+		strings.Join(localCols, ", "), db.QuoteIdentifier(fk.RefTable), strings.Join(refCols, ", "), onDelete, onUpdate)
+	if match != "NONE" {
+		clause += " MATCH " + match
+	}
+	return clause
 }
 
 func (s *Server) handleCreateTable(c *gin.Context) {
@@ -262,6 +421,59 @@ func (s *Server) handleCreateTable(c *gin.Context) {
 		colDefs = append(colDefs, fmt.Sprintf("PRIMARY KEY (%s)", strings.Join(pkParts, ", ")))
 	}
 
+	if len(req.ForeignKeys) > 0 {
+		var selfPK []string
+		if len(req.PrimaryKey) > 0 {
+			selfPK = req.PrimaryKey
+		} else {
+			for _, col := range req.Columns {
+				if col.PK {
+					selfPK = append(selfPK, col.Name)
+				}
+			}
+		}
+		selfSchema := &db.TableSchema{Name: req.Name, Type: "table", PrimaryKey: selfPK}
+		for _, col := range req.Columns {
+			selfSchema.Columns = append(selfSchema.Columns, db.ColumnInfo{Name: col.Name})
+			if col.Unique {
+				selfSchema.Indexes = append(selfSchema.Indexes, db.IndexInfo{Unique: true, Columns: []string{col.Name}})
+			}
+		}
+
+		for i, fk := range req.ForeignKeys {
+			var refSchema *db.TableSchema
+			if strings.EqualFold(fk.RefTable, req.Name) {
+				refSchema = selfSchema
+			} else {
+				refSchema, err = db.GetTableSchema(s.db, fk.RefTable)
+				if err != nil {
+					if errors.Is(err, db.ErrNotFound) {
+						c.JSON(http.StatusBadRequest, gin.H{
+							"ok":    false,
+							"error": gin.H{"code": "BAD_REQUEST", "message": fmt.Sprintf("foreign key %d: refTable %q does not exist", i, fk.RefTable)},
+						})
+						return
+					}
+					c.JSON(http.StatusInternalServerError, gin.H{
+						"ok":    false,
+						"error": gin.H{"code": "DB_ERROR", "message": err.Error()},
+					})
+					return
+				}
+			}
+
+			onDelete, onUpdate, match, verr := validateForeignKey(fk, seenCols, refSchema)
+			if verr != nil {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"ok":    false,
+					"error": gin.H{"code": "BAD_REQUEST", "message": fmt.Sprintf("foreign key %d: %s", i, verr.Error())},
+				})
+				return
+			}
+			colDefs = append(colDefs, buildForeignKeyClause(fk, onDelete, onUpdate, match))
+		}
+	}
+
 	query := fmt.Sprintf("CREATE TABLE %s (%s)", db.QuoteIdentifier(req.Name), strings.Join(colDefs, ", "))
 	if _, err := s.db.Exec(query); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -279,11 +491,129 @@ func (s *Server) handleCreateTable(c *gin.Context) {
 
 // PATCH /api/tables/:name (alter table)
 type AlterTableRequest struct {
-	Op      string          `json:"op"`
-	NewName string          `json:"newName,omitempty"`
-	Column  json.RawMessage `json:"column,omitempty"`
-	From    string          `json:"from,omitempty"`
-	To      string          `json:"to,omitempty"`
+	Op         string          `json:"op"`
+	NewName    string          `json:"newName,omitempty"`
+	Column     json.RawMessage `json:"column,omitempty"`
+	From       string          `json:"from,omitempty"`
+	To         string          `json:"to,omitempty"`
+	ForeignKey json.RawMessage `json:"foreignKey,omitempty"`
+}
+
+type DropForeignKeyData struct {
+	ID int `json:"id"`
+}
+
+// renderExistingForeignKeys renders a table's current foreign keys (grouped by
+// their shared PRAGMA foreign_key_list id) back into table-level FOREIGN KEY
+// clauses, optionally excluding one id (used when dropping a foreign key).
+func renderExistingForeignKeys(fks []db.ForeignKeyInfo, excludeID int, hasExclude bool) []string {
+	groups := make(map[int][]db.ForeignKeyInfo)
+	var order []int
+	for _, fk := range fks {
+		if hasExclude && fk.ID == excludeID {
+			continue
+		}
+		if _, ok := groups[fk.ID]; !ok {
+			order = append(order, fk.ID)
+		}
+		groups[fk.ID] = append(groups[fk.ID], fk)
+	}
+
+	var clauses []string
+	for _, id := range order {
+		rows := groups[id]
+		sort.Slice(rows, func(i, j int) bool { return rows[i].Seq < rows[j].Seq })
+		var from, to []string
+		for _, r := range rows {
+			from = append(from, db.QuoteIdentifier(r.From))
+			to = append(to, db.QuoteIdentifier(r.To))
+		}
+		first := rows[0]
+		clause := fmt.Sprintf("FOREIGN KEY (%s) REFERENCES %s (%s) ON DELETE %s ON UPDATE %s",
+			strings.Join(from, ", "), db.QuoteIdentifier(first.Table), strings.Join(to, ", "), first.OnDelete, first.OnUpdate)
+		if first.Match != "" && !strings.EqualFold(first.Match, "NONE") {
+			clause += " MATCH " + strings.ToUpper(first.Match)
+		}
+		clauses = append(clauses, clause)
+	}
+	return clauses
+}
+
+// runForeignKeyRebuild rebuilds a table in place with an explicit set of
+// table-level foreign key clauses, preserving all columns, the primary key,
+// and recreating every existing index and trigger. Used by add_foreign_key
+// and drop_foreign_key, which both need to add/remove a table-level
+// constraint that SQLite's ALTER TABLE cannot express directly.
+func runForeignKeyRebuild(s *Server, name string, schema *db.TableSchema, fkClauses []string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var colDefs []string
+	for _, col := range schema.Columns {
+		def := fmt.Sprintf("%s %s", db.QuoteIdentifier(col.Name), col.Type)
+		if col.NotNull {
+			def += " NOT NULL"
+		}
+		if col.DefaultVal != nil {
+			def += " DEFAULT " + *col.DefaultVal
+		}
+		colDefs = append(colDefs, def)
+	}
+	if len(schema.PrimaryKey) > 0 {
+		var pkParts []string
+		for _, pkc := range schema.PrimaryKey {
+			pkParts = append(pkParts, db.QuoteIdentifier(pkc))
+		}
+		colDefs = append(colDefs, fmt.Sprintf("PRIMARY KEY (%s)", strings.Join(pkParts, ", ")))
+	}
+	colDefs = append(colDefs, fkClauses...)
+
+	rebuildTable := name + "__rebuild"
+	createSQL := fmt.Sprintf("CREATE TABLE %s (%s)", db.QuoteIdentifier(rebuildTable), strings.Join(colDefs, ", "))
+	if schema.WithoutRowid {
+		createSQL += " WITHOUT ROWID"
+	}
+	if _, err := tx.Exec(createSQL); err != nil {
+		return fmt.Errorf("failed to create rebuild table: %w", err)
+	}
+
+	var cols []string
+	for _, col := range schema.Columns {
+		cols = append(cols, db.QuoteIdentifier(col.Name))
+	}
+	colsJoined := strings.Join(cols, ", ")
+	copySQL := fmt.Sprintf("INSERT INTO %s (%s) SELECT %s FROM %s",
+		db.QuoteIdentifier(rebuildTable), colsJoined, colsJoined, db.QuoteIdentifier(name))
+	if _, err := tx.Exec(copySQL); err != nil {
+		return fmt.Errorf("failed to copy data to rebuild table: %w", err)
+	}
+
+	if _, err := tx.Exec(fmt.Sprintf("DROP TABLE %s", db.QuoteIdentifier(name))); err != nil {
+		return fmt.Errorf("failed to drop original table: %w", err)
+	}
+
+	if _, err := tx.Exec(fmt.Sprintf("ALTER TABLE %s RENAME TO %s", db.QuoteIdentifier(rebuildTable), db.QuoteIdentifier(name))); err != nil {
+		return fmt.Errorf("failed to rename rebuild table: %w", err)
+	}
+
+	for _, idx := range schema.Indexes {
+		if idx.SQL != nil {
+			if _, err := tx.Exec(*idx.SQL); err != nil {
+				return fmt.Errorf("failed to recreate index %q: %w", idx.Name, err)
+			}
+		}
+	}
+
+	for _, trg := range schema.Triggers {
+		if _, err := tx.Exec(trg.SQL); err != nil {
+			return fmt.Errorf("failed to recreate trigger %q: %w", trg.Name, err)
+		}
+	}
+
+	return tx.Commit()
 }
 
 type AddColumnData struct {
@@ -630,6 +960,167 @@ func (s *Server) handleAlterTable(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"ok":   true,
 			"data": resData,
+		})
+		return
+
+	case "add_foreign_key":
+		var fk CreateTableForeignKey
+		if err := json.Unmarshal(req.ForeignKey, &fk); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"ok":    false,
+				"error": gin.H{"code": "BAD_REQUEST", "message": "invalid foreign key definition"},
+			})
+			return
+		}
+
+		localColumns := make(map[string]bool)
+		for _, col := range schema.Columns {
+			localColumns[strings.ToLower(col.Name)] = true
+		}
+
+		var refSchema *db.TableSchema
+		if strings.EqualFold(fk.RefTable, name) {
+			refSchema = schema
+		} else {
+			refSchema, err = db.GetTableSchema(s.db, fk.RefTable)
+			if err != nil {
+				if errors.Is(err, db.ErrNotFound) {
+					c.JSON(http.StatusBadRequest, gin.H{
+						"ok":    false,
+						"error": gin.H{"code": "BAD_REQUEST", "message": fmt.Sprintf("refTable %q does not exist", fk.RefTable)},
+					})
+					return
+				}
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"ok":    false,
+					"error": gin.H{"code": "DB_ERROR", "message": err.Error()},
+				})
+				return
+			}
+		}
+
+		onDelete, onUpdate, match, verr := validateForeignKey(fk, localColumns, refSchema)
+		if verr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"ok":    false,
+				"error": gin.H{"code": "BAD_REQUEST", "message": verr.Error()},
+			})
+			return
+		}
+
+		// Pre-check: existing data must not already violate the proposed FK.
+		var localParts, joinParts, nullChecks []string
+		for i := range fk.Columns {
+			lc := db.QuoteIdentifier(fk.Columns[i])
+			rc := db.QuoteIdentifier(fk.RefColumns[i])
+			localParts = append(localParts, "t."+lc)
+			joinParts = append(joinParts, fmt.Sprintf("t.%s = r.%s", lc, rc))
+			nullChecks = append(nullChecks, fmt.Sprintf("t.%s IS NOT NULL", lc))
+		}
+		antiJoinQuery := fmt.Sprintf(
+			"SELECT COUNT(*) FROM %s t LEFT JOIN %s r ON %s WHERE %s AND r.%s IS NULL",
+			db.QuoteIdentifier(name), db.QuoteIdentifier(fk.RefTable), strings.Join(joinParts, " AND "),
+			strings.Join(nullChecks, " AND "), db.QuoteIdentifier(fk.RefColumns[0]),
+		)
+		var violationCount int64
+		if err := s.db.QueryRow(antiJoinQuery).Scan(&violationCount); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"ok":    false,
+				"error": gin.H{"code": "DB_ERROR", "message": err.Error()},
+			})
+			return
+		}
+		if violationCount > 0 {
+			sampleQuery := fmt.Sprintf(
+				"SELECT %s FROM %s t LEFT JOIN %s r ON %s WHERE %s AND r.%s IS NULL LIMIT 5",
+				strings.Join(localParts, ", "), db.QuoteIdentifier(name), db.QuoteIdentifier(fk.RefTable),
+				strings.Join(joinParts, " AND "), strings.Join(nullChecks, " AND "), db.QuoteIdentifier(fk.RefColumns[0]),
+			)
+			sampleRows, err := s.db.Query(sampleQuery)
+			var samples []map[string]interface{}
+			if err == nil {
+				defer sampleRows.Close()
+				for sampleRows.Next() {
+					vals := make([]interface{}, len(fk.Columns))
+					ptrs := make([]interface{}, len(fk.Columns))
+					for i := range vals {
+						ptrs[i] = &vals[i]
+					}
+					if sampleRows.Scan(ptrs...) == nil {
+						row := make(map[string]interface{})
+						for i, colName := range fk.Columns {
+							row[colName] = vals[i]
+						}
+						samples = append(samples, row)
+					}
+				}
+			}
+			c.JSON(http.StatusConflict, gin.H{
+				"ok": false,
+				"error": gin.H{
+					"code":    "FK_VIOLATION",
+					"message": fmt.Sprintf("%d existing row(s) in %q would violate the proposed foreign key", violationCount, name),
+				},
+				"data": gin.H{"violatingRowCount": violationCount, "sampleKeys": samples},
+			})
+			return
+		}
+
+		existingClauses := renderExistingForeignKeys(schema.ForeignKeys, 0, false)
+		newClause := buildForeignKeyClause(fk, onDelete, onUpdate, match)
+		allClauses := append(existingClauses, newClause)
+
+		if err := runForeignKeyRebuild(s, name, schema, allClauses); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"ok":    false,
+				"error": gin.H{"code": "SQL_ERROR", "message": err.Error()},
+			})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"ok":   true,
+			"data": gin.H{"name": name},
+		})
+		return
+
+	case "drop_foreign_key":
+		var dropData DropForeignKeyData
+		if err := json.Unmarshal(req.ForeignKey, &dropData); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"ok":    false,
+				"error": gin.H{"code": "BAD_REQUEST", "message": "invalid foreign key id"},
+			})
+			return
+		}
+
+		found := false
+		for _, fk := range schema.ForeignKeys {
+			if fk.ID == dropData.ID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"ok":    false,
+				"error": gin.H{"code": "BAD_REQUEST", "message": fmt.Sprintf("no such foreign key id %d", dropData.ID)},
+			})
+			return
+		}
+
+		remainingClauses := renderExistingForeignKeys(schema.ForeignKeys, dropData.ID, true)
+		if err := runForeignKeyRebuild(s, name, schema, remainingClauses); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"ok":    false,
+				"error": gin.H{"code": "SQL_ERROR", "message": err.Error()},
+			})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"ok":   true,
+			"data": gin.H{"name": name},
 		})
 		return
 

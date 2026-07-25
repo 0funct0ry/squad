@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/0funct0ry/squad/internal/db"
@@ -556,5 +557,544 @@ func TestRowCRUDHandlers(t *testing.T) {
 	database.QueryRow("SELECT value FROM without_pk WHERE rowid=1").Scan(&val)
 	if val != 10 {
 		t.Errorf("expected value 10, got %d", val)
+	}
+}
+
+func TestCreateTableWithForeignKeys(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "create_fk_test.db")
+	database, err := db.OpenDB(dbPath, false)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer database.Close()
+
+	_, err = database.Exec(`
+		CREATE TABLE authors (id INTEGER PRIMARY KEY, name TEXT);
+		CREATE TABLE regions (country TEXT, code TEXT, PRIMARY KEY (country, code));
+	`)
+	if err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+
+	srv := NewServer(database, dbPath, true)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client := ts.Client()
+
+	// Single-column FK
+	reqBody := map[string]any{
+		"name": "books",
+		"columns": []any{
+			map[string]any{"name": "id", "type": "INTEGER", "pk": true},
+			map[string]any{"name": "author_id", "type": "INTEGER"},
+		},
+		"foreignKeys": []any{
+			map[string]any{
+				"columns":    []string{"author_id"},
+				"refTable":   "authors",
+				"refColumns": []string{"id"},
+				"onDelete":   "CASCADE",
+			},
+		},
+	}
+	b, _ := json.Marshal(reqBody)
+	resp, err := client.Post(ts.URL+"/api/tables", "application/json", bytes.NewBuffer(b))
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	res := parseResponse(t, resp)
+	resp.Body.Close()
+	if !res.Ok {
+		t.Fatalf("expected ok, got error %+v", res.Error)
+	}
+
+	schema, err := db.GetTableSchema(database, "books")
+	if err != nil {
+		t.Fatalf("schema fetch failed: %v", err)
+	}
+	if len(schema.ForeignKeys) != 1 {
+		t.Fatalf("expected 1 foreign key, got %d", len(schema.ForeignKeys))
+	}
+	fk := schema.ForeignKeys[0]
+	if fk.Table != "authors" || fk.From != "author_id" || fk.To != "id" || fk.OnDelete != "CASCADE" || fk.OnUpdate != "NO ACTION" {
+		t.Errorf("unexpected FK recorded: %+v", fk)
+	}
+
+	// Composite FK
+	compBody := map[string]any{
+		"name": "shipments",
+		"columns": []any{
+			map[string]any{"name": "id", "type": "INTEGER", "pk": true},
+			map[string]any{"name": "country", "type": "TEXT"},
+			map[string]any{"name": "code", "type": "TEXT"},
+		},
+		"foreignKeys": []any{
+			map[string]any{
+				"columns":    []string{"country", "code"},
+				"refTable":   "regions",
+				"refColumns": []string{"country", "code"},
+			},
+		},
+	}
+	cb, _ := json.Marshal(compBody)
+	cresp, err := client.Post(ts.URL+"/api/tables", "application/json", bytes.NewBuffer(cb))
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	cres := parseResponse(t, cresp)
+	cresp.Body.Close()
+	if !cres.Ok {
+		t.Fatalf("expected ok for composite FK, got error %+v", cres.Error)
+	}
+	shipSchema, err := db.GetTableSchema(database, "shipments")
+	if err != nil {
+		t.Fatalf("schema fetch failed: %v", err)
+	}
+	if len(shipSchema.ForeignKeys) != 2 {
+		t.Fatalf("expected 2 foreign key rows (composite) for shipments, got %d", len(shipSchema.ForeignKeys))
+	}
+
+	// Self-referencing FK
+	selfBody := map[string]any{
+		"name": "employees",
+		"columns": []any{
+			map[string]any{"name": "id", "type": "INTEGER", "pk": true},
+			map[string]any{"name": "manager_id", "type": "INTEGER"},
+		},
+		"foreignKeys": []any{
+			map[string]any{
+				"columns":    []string{"manager_id"},
+				"refTable":   "employees",
+				"refColumns": []string{"id"},
+			},
+		},
+	}
+	sb, _ := json.Marshal(selfBody)
+	sresp, err := client.Post(ts.URL+"/api/tables", "application/json", bytes.NewBuffer(sb))
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	sres := parseResponse(t, sresp)
+	sresp.Body.Close()
+	if !sres.Ok {
+		t.Fatalf("expected ok for self-referencing FK, got error %+v", sres.Error)
+	}
+	empSchema, err := db.GetTableSchema(database, "employees")
+	if err != nil {
+		t.Fatalf("schema fetch failed: %v", err)
+	}
+	if len(empSchema.ForeignKeys) != 1 || empSchema.ForeignKeys[0].Table != "employees" {
+		t.Errorf("expected self-referencing FK, got %+v", empSchema.ForeignKeys)
+	}
+}
+
+func TestCreateTableForeignKeyValidation(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "create_fk_validation_test.db")
+	database, err := db.OpenDB(dbPath, false)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer database.Close()
+
+	_, err = database.Exec(`
+		CREATE TABLE authors (id INTEGER PRIMARY KEY, name TEXT);
+		CREATE TABLE non_unique_parent (val TEXT);
+	`)
+	if err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+	_, err = database.Exec("CREATE VIEW author_view AS SELECT * FROM authors")
+	if err != nil {
+		t.Fatalf("view seed failed: %v", err)
+	}
+
+	srv := NewServer(database, dbPath, true)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client := ts.Client()
+
+	baseColumns := []any{
+		map[string]any{"name": "id", "type": "INTEGER", "pk": true},
+		map[string]any{"name": "author_id", "type": "INTEGER"},
+	}
+
+	cases := []struct {
+		name string
+		fk   map[string]any
+	}{
+		{
+			name: "length mismatch",
+			fk: map[string]any{
+				"columns": []string{"author_id"}, "refTable": "authors", "refColumns": []string{},
+			},
+		},
+		{
+			name: "missing refTable",
+			fk: map[string]any{
+				"columns": []string{"author_id"}, "refTable": "nonexistent_table", "refColumns": []string{"id"},
+			},
+		},
+		{
+			name: "missing refColumn",
+			fk: map[string]any{
+				"columns": []string{"author_id"}, "refTable": "authors", "refColumns": []string{"nope"},
+			},
+		},
+		{
+			name: "refColumns not PK/unique",
+			fk: map[string]any{
+				"columns": []string{"author_id"}, "refTable": "non_unique_parent", "refColumns": []string{"val"},
+			},
+		},
+		{
+			name: "invalid onDelete",
+			fk: map[string]any{
+				"columns": []string{"author_id"}, "refTable": "authors", "refColumns": []string{"id"}, "onDelete": "BOGUS",
+			},
+		},
+		{
+			name: "refTable is a view",
+			fk: map[string]any{
+				"columns": []string{"author_id"}, "refTable": "author_view", "refColumns": []string{"id"},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reqBody := map[string]any{
+				"name":        "books_" + strings.ReplaceAll(tc.name, " ", "_"),
+				"columns":     baseColumns,
+				"foreignKeys": []any{tc.fk},
+			}
+			b, _ := json.Marshal(reqBody)
+			resp, err := client.Post(ts.URL+"/api/tables", "application/json", bytes.NewBuffer(b))
+			if err != nil {
+				t.Fatalf("POST failed: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Errorf("case %q: expected 400 Bad Request, got %d", tc.name, resp.StatusCode)
+			}
+			res := parseResponse(t, resp)
+			if res.Error == nil || res.Error.Code != "BAD_REQUEST" {
+				t.Errorf("case %q: expected BAD_REQUEST, got %+v", tc.name, res.Error)
+			}
+		})
+	}
+}
+
+func TestAlterTableAddForeignKey(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "alter_fk_add_test.db")
+	database, err := db.OpenDB(dbPath, false)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer database.Close()
+
+	_, err = database.Exec(`
+		CREATE TABLE authors (id INTEGER PRIMARY KEY, name TEXT);
+		CREATE TABLE books (id INTEGER PRIMARY KEY, author_id INTEGER, title TEXT);
+		CREATE INDEX idx_books_title ON books(title);
+		CREATE TRIGGER trg_books_noop AFTER INSERT ON books BEGIN SELECT 1; END;
+		INSERT INTO authors (id, name) VALUES (1, 'Ada');
+		INSERT INTO books (id, author_id, title) VALUES (1, 1, 'Book One');
+	`)
+	if err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+
+	srv := NewServer(database, dbPath, true)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client := ts.Client()
+
+	beforeSchema, err := db.GetTableSchema(database, "books")
+	if err != nil {
+		t.Fatalf("schema fetch failed: %v", err)
+	}
+
+	addBody, _ := json.Marshal(map[string]any{
+		"op": "add_foreign_key",
+		"foreignKey": map[string]any{
+			"columns": []string{"author_id"}, "refTable": "authors", "refColumns": []string{"id"},
+		},
+	})
+	req, _ := http.NewRequest("PATCH", ts.URL+"/api/tables/books", bytes.NewBuffer(addBody))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("PATCH failed: %v", err)
+	}
+	res := parseResponse(t, resp)
+	resp.Body.Close()
+	if !res.Ok {
+		t.Fatalf("expected ok, got error %+v", res.Error)
+	}
+
+	afterSchema, err := db.GetTableSchema(database, "books")
+	if err != nil {
+		t.Fatalf("schema fetch failed: %v", err)
+	}
+	if len(afterSchema.ForeignKeys) != 1 {
+		t.Fatalf("expected 1 foreign key, got %d", len(afterSchema.ForeignKeys))
+	}
+	if len(afterSchema.Indexes) != len(beforeSchema.Indexes) {
+		t.Errorf("expected indexes preserved, before=%d after=%d", len(beforeSchema.Indexes), len(afterSchema.Indexes))
+	}
+	if len(afterSchema.Triggers) != len(beforeSchema.Triggers) || len(afterSchema.Triggers) != 1 {
+		t.Errorf("expected triggers preserved, before=%d after=%d", len(beforeSchema.Triggers), len(afterSchema.Triggers))
+	}
+
+	var rowCount int
+	database.QueryRow("SELECT COUNT(*) FROM books").Scan(&rowCount)
+	if rowCount != 1 {
+		t.Errorf("expected 1 row preserved, got %d", rowCount)
+	}
+
+	// A violating insert should now be genuinely rejected by SQLite.
+	_, err = database.Exec("INSERT INTO books (id, author_id, title) VALUES (2, 999, 'Orphan')")
+	if err == nil {
+		t.Errorf("expected FK-violating insert to fail")
+	}
+}
+
+func TestAlterTableAddForeignKeyViolation(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "alter_fk_violation_test.db")
+	database, err := db.OpenDB(dbPath, false)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer database.Close()
+
+	_, err = database.Exec(`
+		CREATE TABLE authors (id INTEGER PRIMARY KEY, name TEXT);
+		CREATE TABLE books (id INTEGER PRIMARY KEY, author_id INTEGER, title TEXT);
+		INSERT INTO authors (id, name) VALUES (1, 'Ada');
+		INSERT INTO books (id, author_id, title) VALUES (1, 1, 'Book One'), (2, 999, 'Orphan');
+	`)
+	if err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+
+	srv := NewServer(database, dbPath, true)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client := ts.Client()
+
+	beforeSchema, err := db.GetTableSchema(database, "books")
+	if err != nil {
+		t.Fatalf("schema fetch failed: %v", err)
+	}
+	var beforeCount int
+	database.QueryRow("SELECT COUNT(*) FROM books").Scan(&beforeCount)
+
+	addBody, _ := json.Marshal(map[string]any{
+		"op": "add_foreign_key",
+		"foreignKey": map[string]any{
+			"columns": []string{"author_id"}, "refTable": "authors", "refColumns": []string{"id"},
+		},
+	})
+	req, _ := http.NewRequest("PATCH", ts.URL+"/api/tables/books", bytes.NewBuffer(addBody))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("PATCH failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict, got %d", resp.StatusCode)
+	}
+	res := parseResponse(t, resp)
+	if res.Error == nil || res.Error.Code != "FK_VIOLATION" {
+		t.Fatalf("expected FK_VIOLATION, got %+v", res.Error)
+	}
+	count, _ := res.Data["violatingRowCount"].(float64)
+	if int(count) != 1 {
+		t.Errorf("expected violatingRowCount 1, got %v", res.Data["violatingRowCount"])
+	}
+
+	afterSchema, err := db.GetTableSchema(database, "books")
+	if err != nil {
+		t.Fatalf("schema fetch failed: %v", err)
+	}
+	if len(afterSchema.ForeignKeys) != len(beforeSchema.ForeignKeys) {
+		t.Errorf("expected schema unchanged, before FKs=%d after FKs=%d", len(beforeSchema.ForeignKeys), len(afterSchema.ForeignKeys))
+	}
+	var afterCount int
+	database.QueryRow("SELECT COUNT(*) FROM books").Scan(&afterCount)
+	if afterCount != beforeCount {
+		t.Errorf("expected row data unchanged, before=%d after=%d", beforeCount, afterCount)
+	}
+}
+
+func TestAlterTableDropForeignKey(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "alter_fk_drop_test.db")
+	database, err := db.OpenDB(dbPath, false)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer database.Close()
+
+	_, err = database.Exec(`
+		CREATE TABLE authors (id INTEGER PRIMARY KEY, name TEXT);
+		CREATE TABLE publishers (id INTEGER PRIMARY KEY, name TEXT);
+		CREATE TABLE books (
+			id INTEGER PRIMARY KEY,
+			author_id INTEGER,
+			publisher_id INTEGER,
+			FOREIGN KEY(author_id) REFERENCES authors(id),
+			FOREIGN KEY(publisher_id) REFERENCES publishers(id)
+		);
+		INSERT INTO authors (id, name) VALUES (1, 'Ada');
+		INSERT INTO publishers (id, name) VALUES (1, 'Pub');
+		INSERT INTO books (id, author_id, publisher_id) VALUES (1, 1, 1);
+	`)
+	if err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+
+	srv := NewServer(database, dbPath, true)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client := ts.Client()
+
+	schema, err := db.GetTableSchema(database, "books")
+	if err != nil {
+		t.Fatalf("schema fetch failed: %v", err)
+	}
+	if len(schema.ForeignKeys) != 2 {
+		t.Fatalf("expected 2 foreign keys before drop, got %d", len(schema.ForeignKeys))
+	}
+	var targetID int
+	var keptTable string
+	for _, fk := range schema.ForeignKeys {
+		if fk.Table == "authors" {
+			targetID = fk.ID
+		} else {
+			keptTable = fk.Table
+		}
+	}
+
+	dropBody, _ := json.Marshal(map[string]any{
+		"op":         "drop_foreign_key",
+		"foreignKey": map[string]any{"id": targetID},
+	})
+	req, _ := http.NewRequest("PATCH", ts.URL+"/api/tables/books", bytes.NewBuffer(dropBody))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("PATCH failed: %v", err)
+	}
+	res := parseResponse(t, resp)
+	resp.Body.Close()
+	if !res.Ok {
+		t.Fatalf("expected ok, got error %+v", res.Error)
+	}
+
+	afterSchema, err := db.GetTableSchema(database, "books")
+	if err != nil {
+		t.Fatalf("schema fetch failed: %v", err)
+	}
+	if len(afterSchema.ForeignKeys) != 1 || afterSchema.ForeignKeys[0].Table != keptTable {
+		t.Errorf("expected only %q FK remaining, got %+v", keptTable, afterSchema.ForeignKeys)
+	}
+
+	var rowCount int
+	database.QueryRow("SELECT COUNT(*) FROM books").Scan(&rowCount)
+	if rowCount != 1 {
+		t.Errorf("expected 1 row preserved, got %d", rowCount)
+	}
+
+	// Unknown id is rejected
+	badDropBody, _ := json.Marshal(map[string]any{
+		"op":         "drop_foreign_key",
+		"foreignKey": map[string]any{"id": 9999},
+	})
+	req, _ = http.NewRequest("PATCH", ts.URL+"/api/tables/books", bytes.NewBuffer(badDropBody))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatalf("PATCH failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 Bad Request for unknown id, got %d", resp.StatusCode)
+	}
+}
+
+func TestForeignKeyOpsReadOnlyAndNotFound(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "fk_readonly_test.db")
+	database, err := db.OpenDB(dbPath, false)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer database.Close()
+
+	_, err = database.Exec(`
+		CREATE TABLE authors (id INTEGER PRIMARY KEY, name TEXT);
+		CREATE TABLE books (id INTEGER PRIMARY KEY, author_id INTEGER);
+	`)
+	if err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+
+	// Read-only server (write=false)
+	srv := NewServer(database, dbPath, false)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client := ts.Client()
+
+	addBody, _ := json.Marshal(map[string]any{
+		"op": "add_foreign_key",
+		"foreignKey": map[string]any{
+			"columns": []string{"author_id"}, "refTable": "authors", "refColumns": []string{"id"},
+		},
+	})
+	req, _ := http.NewRequest("PATCH", ts.URL+"/api/tables/books", bytes.NewBuffer(addBody))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("PATCH failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("expected 403 Forbidden, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	dropBody, _ := json.Marshal(map[string]any{
+		"op":         "drop_foreign_key",
+		"foreignKey": map[string]any{"id": 1},
+	})
+	req, _ = http.NewRequest("PATCH", ts.URL+"/api/tables/books", bytes.NewBuffer(dropBody))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatalf("PATCH failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("expected 403 Forbidden, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// 404 for nonexistent table (write-mode server)
+	srvWrite := NewServer(database, dbPath, true)
+	tsWrite := httptest.NewServer(srvWrite.Handler())
+	defer tsWrite.Close()
+	clientWrite := tsWrite.Client()
+
+	req, _ = http.NewRequest("PATCH", tsWrite.URL+"/api/tables/nonexistent", bytes.NewBuffer(addBody))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = clientWrite.Do(req)
+	if err != nil {
+		t.Fatalf("PATCH failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404 Not Found, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404 Not Found for nonexistent table, got %d", resp.StatusCode)
 	}
 }
