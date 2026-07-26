@@ -23,6 +23,7 @@ type SandboxConfig struct {
 	commonFlags
 	Dir         string
 	MaxUploadMB int64
+	Examples    bool
 }
 
 var sandboxCfg SandboxConfig
@@ -42,10 +43,13 @@ func init() {
 	registerCommonFlags(sandboxCmd.Flags(), &sandboxCfg.commonFlags)
 	sandboxCmd.Flags().StringVar(&sandboxCfg.Dir, "dir", "", "Directory to store sandbox database files (env SQUAD_SANDBOX_DIR); defaults to a fresh temp dir")
 	sandboxCmd.Flags().Int64Var(&sandboxCfg.MaxUploadMB, "max-upload-size", 512, "Max upload size in MB for sandbox database files")
+	sandboxCmd.Flags().BoolVarP(&sandboxCfg.Examples, "examples", "e", false, "Enable the canned example data-model library")
 	rootCmd.AddCommand(sandboxCmd)
 }
 
 func runSandbox(cmd *cobra.Command, args []string) {
+	applyExamplesEnvOverride(cmd.Flags().Changed("examples"), &sandboxCfg.Examples)
+
 	dir := sandboxCfg.Dir
 	dirExplicitlySet := cmd.Flags().Changed("dir")
 	if dir == "" {
@@ -94,7 +98,7 @@ func runSandbox(cmd *cobra.Command, args []string) {
 	fmt.Printf("squad %s (sandbox mode)\n", Version)
 	fmt.Printf("  sandbox dir : %s\n", absDir)
 
-	srv := server.NewSandboxServer(registry)
+	srv := server.NewSandboxServer(registry, sandboxCfg.Examples)
 	addr := fmt.Sprintf("%s:%d", sandboxCfg.Addr, sandboxCfg.Port)
 	fmt.Printf("  address     : http://%s\n", addr)
 	fmt.Println("  press Ctrl+C to stop")

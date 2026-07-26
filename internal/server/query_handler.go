@@ -19,12 +19,38 @@ type QueryRequest struct {
 }
 
 type QueryResponseData struct {
-	Columns      []string `json:"columns"`
-	Rows         [][]any  `json:"rows"`
-	RowsAffected int64    `json:"rowsAffected"`
-	DurationMs   float64  `json:"durationMs"`
-	Limit        int      `json:"limit"`
-	Truncated    bool     `json:"truncated"`
+	Columns       []string `json:"columns"`
+	Rows          [][]any  `json:"rows"`
+	RowsAffected  int64    `json:"rowsAffected"`
+	DurationMs    float64  `json:"durationMs"`
+	Limit         int      `json:"limit"`
+	Truncated     bool     `json:"truncated"`
+	SchemaChanged bool     `json:"schemaChanged"`
+}
+
+// schemaChangingKeywords are the statement keywords that alter the set of
+// tables/views/indexes/triggers in the database, as opposed to just their
+// contents. Used to tell the frontend when it needs to refresh the table
+// list even though a DDL statement reports 0 rowsAffected (e.g. CREATE
+// TABLE), such as after running an --examples DDL script.
+var schemaChangingKeywords = map[string]bool{
+	"CREATE": true,
+	"ALTER":  true,
+	"DROP":   true,
+}
+
+// isSchemaChangingStatement reports whether stmt is DDL that adds, removes,
+// or restructures a schema object.
+func isSchemaChangingStatement(stmt string) bool {
+	clean, err := db.StripCommentsAndWhitespace(stmt)
+	if err != nil {
+		return false
+	}
+	words := strings.Fields(clean)
+	if len(words) == 0 {
+		return false
+	}
+	return schemaChangingKeywords[strings.ToUpper(words[0])]
 }
 
 func (s *Server) handleQuery(c *gin.Context) {
@@ -133,11 +159,12 @@ func (s *Server) handleQuery(c *gin.Context) {
 
 	// Setup execution
 	var (
-		cols         []string
-		resultRows   [][]any
-		rowsAffected int64
-		truncated    bool
-		execDuration float64
+		cols          []string
+		resultRows    [][]any
+		rowsAffected  int64
+		truncated     bool
+		execDuration  float64
+		schemaChanged bool
 	)
 
 	// If we are running write mode queries or multiple statements, run inside a single transaction
@@ -182,6 +209,9 @@ func (s *Server) handleQuery(c *gin.Context) {
 				affected, err := res.RowsAffected()
 				if err == nil {
 					totalRowsAffected += affected
+				}
+				if isSchemaChangingStatement(stmt) {
+					schemaChanged = true
 				}
 			} else {
 				// Read statement inside transaction (e.g. SELECT at the end of a batch)
@@ -265,12 +295,13 @@ func (s *Server) handleQuery(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"ok": true,
 		"data": QueryResponseData{
-			Columns:      cols,
-			Rows:         resultRows,
-			RowsAffected: rowsAffected,
-			DurationMs:   execDuration,
-			Limit:        limit,
-			Truncated:    truncated,
+			Columns:       cols,
+			Rows:          resultRows,
+			RowsAffected:  rowsAffected,
+			DurationMs:    execDuration,
+			Limit:         limit,
+			Truncated:     truncated,
+			SchemaChanged: schemaChanged,
 		},
 	})
 }

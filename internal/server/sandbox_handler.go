@@ -44,6 +44,8 @@ func (s *Server) setupSandboxRoutes(api *gin.RouterGroup) {
 		scoped.POST("/tables/:name/seed", scopedHandler((*Server).handleSeedTable))
 		scoped.GET("/seed/generators/:name/sample", scopedHandler((*Server).handleSeedGeneratorSample))
 	}
+
+	s.registerExamplesRoutes(api)
 }
 
 const scopedServerKey = "scopedServer"

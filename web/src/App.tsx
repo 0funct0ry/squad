@@ -15,7 +15,8 @@ import {
   Check,
   AlertCircle,
   Download,
-  AudioLines
+  AudioLines,
+  LibraryBig
 } from 'lucide-react';
 import {
   sniffHex,
@@ -32,6 +33,8 @@ import GeneratorOptionsForm from './components/GeneratorOptionsForm';
 import SandboxEmptyState from './components/SandboxEmptyState';
 import DbSwitcher from './components/DbSwitcher';
 import SandboxManagePage from './components/SandboxManagePage';
+import ExamplesPicker, { type ExampleMeta } from './components/ExamplesPicker';
+import ConfirmModal from './components/ConfirmModal';
 import { apiFetch, apiUrl, setApiBase } from './lib/api';
 
 interface MetaData {
@@ -199,6 +202,7 @@ interface QueryResult {
   durationMs: number;
   limit: number;
   truncated: boolean;
+  schemaChanged: boolean;
 }
 
 interface QueryHistoryEntry {
@@ -721,6 +725,45 @@ export default function App() {
   const [queryLoading, setQueryLoading] = useState<boolean>(false);
   const editorViewRef = useRef<EditorView | null>(null);
 
+  // Examples (--examples) state: null until we know whether the feature is
+  // enabled server-side (GET /api/examples 404s when the flag is off).
+  const [examplesList, setExamplesList] = useState<ExampleMeta[] | null>(null);
+  const [examplesPickerOpen, setExamplesPickerOpen] = useState(false);
+  const [pendingExampleSlug, setPendingExampleSlug] = useState<string | null>(null);
+
+  const setEditorContents = (text: string) => {
+    setSqlValue(text);
+    const view = editorViewRef.current;
+    if (view) {
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
+    }
+  };
+
+  const applyExample = async (slug: string) => {
+    try {
+      // The examples registry is not scoped per-database, so this always
+      // hits the top-level /api/examples/:slug route — never apiFetch,
+      // which would resolve against the sandbox-scoped /api/sandbox/dbs/:id
+      // base once a sandbox database is selected.
+      const res = await fetch(`/api/examples/${encodeURIComponent(slug)}`);
+      const body = await res.json();
+      if (!res.ok || !body.ok) throw new Error(body.error?.message || 'Failed to load example');
+      setEditorContents(body.data.schema);
+    } catch (err: any) {
+      setToast({ message: err.message || 'Failed to load example', type: 'error' });
+      setTimeout(() => setToast(null), 5000);
+    }
+  };
+
+  const handleSelectExample = (slug: string) => {
+    const trivial = sqlValue.trim() === '' || sqlValue.trim() === 'SELECT * FROM sqlite_master LIMIT 10;';
+    if (trivial) {
+      applyExample(slug);
+    } else {
+      setPendingExampleSlug(slug);
+    }
+  };
+
   const handleExecuteQuery = async (sqlToRun: string) => {
     if (queryLoading || !sqlToRun.trim()) return;
 
@@ -741,10 +784,13 @@ export default function App() {
         },
         ...prev,
       ]);
-      if (data.rowsAffected > 0) {
+      if (data.rowsAffected > 0 || data.schemaChanged) {
         fetchMetaAndTables();
         setRefetchTrigger((prev) => prev + 1);
-        setToast({ message: `${data.rowsAffected} row${data.rowsAffected === 1 ? '' : 's'} affected`, type: 'success' });
+        const message = data.rowsAffected > 0
+          ? `${data.rowsAffected} row${data.rowsAffected === 1 ? '' : 's'} affected`
+          : 'Schema updated';
+        setToast({ message, type: 'success' });
         setTimeout(() => setToast(null), 3000);
       }
     } catch (err: any) {
@@ -1352,6 +1398,14 @@ export default function App() {
         if (res) fetchMetaAndTables();
       })
       .catch(() => fetchMetaAndTables());
+
+    // Always top-level /api/examples — not scoped per sandbox database.
+    fetch('/api/examples')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body) => {
+        if (body && body.ok) setExamplesList(body.data ?? []);
+      })
+      .catch(() => {});
   }, []);
 
   // Refetch when entering Info tab
@@ -2358,18 +2412,30 @@ export default function App() {
                     <div className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden bg-white dark:bg-slate-900 shrink-0">
                       <div className="flex items-center justify-between px-3 py-2 bg-slate-100 dark:bg-slate-850 text-sm border-b border-slate-200 dark:border-slate-800">
                         <span className="font-medium text-slate-700 dark:text-slate-300">query.sql</span>
-                        <button
-                          onClick={runQueryFromEditor}
-                          disabled={queryLoading}
-                          className="px-3 py-1.5 rounded-md bg-indigo-600 text-white hover:bg-indigo-500 disabled:bg-indigo-400 font-medium text-xs flex items-center gap-1.5 cursor-pointer disabled:cursor-not-allowed"
-                        >
-                          {queryLoading ? (
-                            <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white border-t-transparent"></span>
-                          ) : (
-                            <span>Run ▸</span>
+                        <div className="flex items-center gap-2">
+                          {examplesList && (
+                            <button
+                              onClick={() => setExamplesPickerOpen(true)}
+                              className="px-2.5 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 font-medium text-xs flex items-center gap-1.5 cursor-pointer text-slate-700 dark:text-slate-300"
+                              title="Insert an example data model"
+                            >
+                              <LibraryBig className="w-3.5 h-3.5" />
+                              Examples
+                            </button>
                           )}
-                          <span className="opacity-70 text-[10px]">⌘↵</span>
-                        </button>
+                          <button
+                            onClick={runQueryFromEditor}
+                            disabled={queryLoading}
+                            className="px-3 py-1.5 rounded-md bg-indigo-600 text-white hover:bg-indigo-500 disabled:bg-indigo-400 font-medium text-xs flex items-center gap-1.5 cursor-pointer disabled:cursor-not-allowed"
+                          >
+                            {queryLoading ? (
+                              <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white border-t-transparent"></span>
+                            ) : (
+                              <span>Run ▸</span>
+                            )}
+                            <span className="opacity-70 text-[10px]">⌘↵</span>
+                          </button>
+                        </div>
                       </div>
                       <SqlEditor
                         value={sqlValue}
@@ -3643,6 +3709,29 @@ export default function App() {
           />
         );
       })()}
+
+      {examplesPickerOpen && examplesList && (
+        <ExamplesPicker
+          examples={examplesList}
+          onSelect={handleSelectExample}
+          onClose={() => setExamplesPickerOpen(false)}
+        />
+      )}
+
+      {pendingExampleSlug && (
+        <ConfirmModal
+          title="Replace editor contents?"
+          destructive
+          confirmLabel="Replace"
+          body="This will replace the current contents of the SQL Editor with the selected example's DDL."
+          onCancel={() => setPendingExampleSlug(null)}
+          onConfirm={() => {
+            const slug = pendingExampleSlug;
+            setPendingExampleSlug(null);
+            applyExample(slug);
+          }}
+        />
+      )}
 
       {/* TOAST SYSTEM */}
       {toast && (

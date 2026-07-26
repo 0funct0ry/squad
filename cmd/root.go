@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,6 +25,7 @@ type Config struct {
 	Write          bool
 	Rest           bool
 	ReadOnlyPragma bool
+	Examples       bool
 }
 
 var cfg Config
@@ -36,6 +38,8 @@ var rootCmd = &cobra.Command{
 	Long:    `squad opens a SQLite database and starts a web server for browsing, querying, and managing your SQLite databases.`,
 	Args:    cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
+		applyExamplesEnvOverride(cmd.Flags().Changed("examples"), &cfg.Examples)
+
 		dbPath := args[0]
 		resolvedPath := dbPath
 		if dbPath != ":memory:" && !strings.HasPrefix(dbPath, "file:") {
@@ -65,7 +69,7 @@ var rootCmd = &cobra.Command{
 		defer database.Close()
 
 		// Start the server
-		srv := server.NewServer(database, resolvedPath, cfg.Write)
+		srv := server.NewServer(database, resolvedPath, cfg.Write, cfg.Examples)
 		addr := fmt.Sprintf("%s:%d", cfg.Addr, cfg.Port)
 		fmt.Printf("  address  : http://%s\n", addr)
 		fmt.Println("  press Ctrl+C to stop")
@@ -117,4 +121,18 @@ func init() {
 	rootCmd.Flags().BoolVarP(&cfg.Write, "write", "w", false, "Enable mutations (DDL, DML, write operations)")
 	rootCmd.Flags().BoolVarP(&cfg.Rest, "rest", "r", false, "Enable auto REST endpoints for tables")
 	rootCmd.Flags().BoolVarP(&cfg.ReadOnlyPragma, "read-only-pragma", "R", true, "Open SQLite with mode=ro when not --write")
+	rootCmd.Flags().BoolVarP(&cfg.Examples, "examples", "e", false, "Enable the canned example data-model library")
+}
+
+// applyExamplesEnvOverride applies SQUAD_EXAMPLES when --examples was not
+// explicitly passed on the command line, preserving flags > env > defaults.
+func applyExamplesEnvOverride(changed bool, examples *bool) {
+	if changed {
+		return
+	}
+	if v := os.Getenv("SQUAD_EXAMPLES"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			*examples = b
+		}
+	}
 }

@@ -18,18 +18,20 @@ type Server struct {
 	db       *sql.DB
 	dbPath   string
 	write    bool
+	examples bool
 	registry *db.Registry // non-nil in sandbox mode; nil for the single-DB flow
 }
 
-func NewServer(database *sql.DB, dbPath string, write bool) *Server {
+func NewServer(database *sql.DB, dbPath string, write bool, examplesEnabled bool) *Server {
 	// Disable debug logs by default to keep output clean, unless needed
 	gin.SetMode(gin.ReleaseMode)
 
 	s := &Server{
-		router: gin.New(), // Use gin.New() and custom recovery/logger to control logging
-		db:     database,
-		dbPath: dbPath,
-		write:  write,
+		router:   gin.New(), // Use gin.New() and custom recovery/logger to control logging
+		db:       database,
+		dbPath:   dbPath,
+		write:    write,
+		examples: examplesEnabled,
 	}
 
 	s.router.Use(gin.Recovery())
@@ -39,12 +41,13 @@ func NewServer(database *sql.DB, dbPath string, write bool) *Server {
 
 // NewSandboxServer starts a Server with no fixed database — every request is
 // routed through the registry to a per-database connection instead.
-func NewSandboxServer(registry *db.Registry) *Server {
+func NewSandboxServer(registry *db.Registry, examplesEnabled bool) *Server {
 	gin.SetMode(gin.ReleaseMode)
 
 	s := &Server{
 		router:   gin.New(),
 		registry: registry,
+		examples: examplesEnabled,
 	}
 
 	s.router.Use(gin.Recovery())
@@ -132,6 +135,8 @@ func (s *Server) setupSingleDBRoutes(api *gin.RouterGroup) {
 	api.GET("/tables/:name/seed/plan", s.WriteGateMiddleware("seeding table"), s.handleSeedPlan)
 	api.POST("/tables/:name/seed", s.WriteGateMiddleware("seeding table"), s.handleSeedTable)
 	api.GET("/seed/generators/:name/sample", s.WriteGateMiddleware("seeding table"), s.handleSeedGeneratorSample)
+
+	s.registerExamplesRoutes(api)
 }
 
 func (s *Server) handleMeta(c *gin.Context) {
