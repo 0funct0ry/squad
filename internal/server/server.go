@@ -14,10 +14,11 @@ import (
 )
 
 type Server struct {
-	router *gin.Engine
-	db     *sql.DB
-	dbPath string
-	write  bool
+	router   *gin.Engine
+	db       *sql.DB
+	dbPath   string
+	write    bool
+	registry *db.Registry // non-nil in sandbox mode; nil for the single-DB flow
 }
 
 func NewServer(database *sql.DB, dbPath string, write bool) *Server {
@@ -36,28 +37,27 @@ func NewServer(database *sql.DB, dbPath string, write bool) *Server {
 	return s
 }
 
+// NewSandboxServer starts a Server with no fixed database — every request is
+// routed through the registry to a per-database connection instead.
+func NewSandboxServer(registry *db.Registry) *Server {
+	gin.SetMode(gin.ReleaseMode)
+
+	s := &Server{
+		router:   gin.New(),
+		registry: registry,
+	}
+
+	s.router.Use(gin.Recovery())
+	s.setupRoutes()
+	return s
+}
+
 func (s *Server) setupRoutes() {
 	api := s.router.Group("/api")
-	{
-		api.GET("/meta", s.handleMeta)
-		api.GET("/tables", s.handleTables)
-		api.GET("/tables/:name/schema", s.handleTableSchema)
-		api.GET("/tables/:name/rows", s.handleTableRows)
-		api.POST("/query", s.handleQuery)
-		api.GET("/tables/:name/export", s.handleTableExport)
-		api.POST("/export/query", s.handleQueryExport)
-
-		// Write-mode DDL & table editor endpoints
-		api.POST("/ddl", s.WriteGateMiddleware("executing DDL"), s.handlePostDDL)
-		api.POST("/tables", s.WriteGateMiddleware("creating table"), s.handleCreateTable)
-		api.PATCH("/tables/:name", s.WriteGateMiddleware("altering table"), s.handleAlterTable)
-		api.DELETE("/tables/:name", s.WriteGateMiddleware("dropping table"), s.handleDropTable)
-		api.POST("/tables/:name/rows", s.WriteGateMiddleware("inserting row"), s.handleInsertRow)
-		api.PATCH("/tables/:name/rows", s.WriteGateMiddleware("updating row"), s.handleUpdateRow)
-		api.DELETE("/tables/:name/rows", s.WriteGateMiddleware("deleting row"), s.handleDeleteRow)
-		api.GET("/tables/:name/seed/plan", s.WriteGateMiddleware("seeding table"), s.handleSeedPlan)
-		api.POST("/tables/:name/seed", s.WriteGateMiddleware("seeding table"), s.handleSeedTable)
-		api.GET("/seed/generators/:name/sample", s.WriteGateMiddleware("seeding table"), s.handleSeedGeneratorSample)
+	if s.registry == nil {
+		s.setupSingleDBRoutes(api)
+	} else {
+		s.setupSandboxRoutes(api)
 	}
 
 	// Embedded SPA serving
@@ -110,6 +110,28 @@ func (s *Server) setupRoutes() {
 		}
 		c.Data(http.StatusOK, "text/html; charset=utf-8", indexData)
 	})
+}
+
+func (s *Server) setupSingleDBRoutes(api *gin.RouterGroup) {
+	api.GET("/meta", s.handleMeta)
+	api.GET("/tables", s.handleTables)
+	api.GET("/tables/:name/schema", s.handleTableSchema)
+	api.GET("/tables/:name/rows", s.handleTableRows)
+	api.POST("/query", s.handleQuery)
+	api.GET("/tables/:name/export", s.handleTableExport)
+	api.POST("/export/query", s.handleQueryExport)
+
+	// Write-mode DDL & table editor endpoints
+	api.POST("/ddl", s.WriteGateMiddleware("executing DDL"), s.handlePostDDL)
+	api.POST("/tables", s.WriteGateMiddleware("creating table"), s.handleCreateTable)
+	api.PATCH("/tables/:name", s.WriteGateMiddleware("altering table"), s.handleAlterTable)
+	api.DELETE("/tables/:name", s.WriteGateMiddleware("dropping table"), s.handleDropTable)
+	api.POST("/tables/:name/rows", s.WriteGateMiddleware("inserting row"), s.handleInsertRow)
+	api.PATCH("/tables/:name/rows", s.WriteGateMiddleware("updating row"), s.handleUpdateRow)
+	api.DELETE("/tables/:name/rows", s.WriteGateMiddleware("deleting row"), s.handleDeleteRow)
+	api.GET("/tables/:name/seed/plan", s.WriteGateMiddleware("seeding table"), s.handleSeedPlan)
+	api.POST("/tables/:name/seed", s.WriteGateMiddleware("seeding table"), s.handleSeedTable)
+	api.GET("/seed/generators/:name/sample", s.WriteGateMiddleware("seeding table"), s.handleSeedGeneratorSample)
 }
 
 func (s *Server) handleMeta(c *gin.Context) {

@@ -20,14 +20,10 @@ var (
 )
 
 type Config struct {
-	Addr           string
-	Port           int
+	commonFlags
 	Write          bool
 	Rest           bool
-	Open           bool
 	ReadOnlyPragma bool
-	Token          string
-	LogLevel       string
 }
 
 var cfg Config
@@ -117,12 +113,8 @@ func init() {
 	rootCmd.SetVersionTemplate(fmt.Sprintf("squad version %s (commit: %s)\n", Version, CommitSHA))
 
 	// Bind flags to Config struct
-	rootCmd.Flags().StringVarP(&cfg.Addr, "addr", "a", "127.0.0.1", "Bind address")
-	rootCmd.Flags().IntVarP(&cfg.Port, "port", "p", 7071, "Port to listen on")
+	registerCommonFlags(rootCmd.Flags(), &cfg.commonFlags)
 	rootCmd.Flags().BoolVarP(&cfg.Write, "write", "w", false, "Enable mutations (DDL, DML, write operations)")
 	rootCmd.Flags().BoolVarP(&cfg.Rest, "rest", "r", false, "Enable auto REST endpoints for tables")
-	rootCmd.Flags().BoolVarP(&cfg.Open, "open", "o", true, "Auto-open default browser on start")
 	rootCmd.Flags().BoolVarP(&cfg.ReadOnlyPragma, "read-only-pragma", "R", true, "Open SQLite with mode=ro when not --write")
-	rootCmd.Flags().StringVarP(&cfg.Token, "token", "t", "", "Optional bearer token gate for the API")
-	rootCmd.Flags().StringVarP(&cfg.LogLevel, "log-level", "l", "info", "Log level (debug/info/warn/error)")
 }

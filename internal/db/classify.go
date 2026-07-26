@@ -28,8 +28,41 @@ func SplitStatements(sql string) ([]string, error) {
 	inLineComment := false
 	inBlockComment := false
 
+	// CREATE TRIGGER bodies are wrapped in BEGIN ... END and contain their
+	// own semicolon-terminated statements internally (e.g. an UPDATE inside
+	// the trigger). A semicolon must only end the outer statement when it
+	// isn't nested inside such a block, so track BEGIN/END as word-bounded
+	// keywords (case-insensitive) outside of quotes/comments/identifiers.
+	beginDepth := 0
+
 	runes := []rune(sql)
 	n := len(runes)
+
+	isWordChar := func(r rune) bool {
+		return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
+	}
+
+	// matchKeyword reports whether runes[i:] starts with word, matched
+	// case-insensitively and bounded by non-word characters on both sides.
+	matchKeyword := func(i int, word string) bool {
+		wr := []rune(word)
+		if i+len(wr) > n {
+			return false
+		}
+		if i > 0 && isWordChar(runes[i-1]) {
+			return false
+		}
+		for j, w := range wr {
+			if unicode.ToUpper(runes[i+j]) != w {
+				return false
+			}
+		}
+		end := i + len(wr)
+		if end < n && isWordChar(runes[end]) {
+			return false
+		}
+		return true
+	}
 
 	for i := 0; i < n; i++ {
 		r := runes[i]
@@ -129,8 +162,18 @@ func SplitStatements(sql string) ([]string, error) {
 			continue
 		}
 
-		// Check for semicolon
-		if r == ';' {
+		if matchKeyword(i, "BEGIN") {
+			beginDepth++
+		} else if matchKeyword(i, "END") {
+			if beginDepth > 0 {
+				beginDepth--
+			}
+		}
+
+		// Check for semicolon — only ends a statement outside a BEGIN...END
+		// block (e.g. a trigger body), whose internal semicolons belong to
+		// the enclosing CREATE TRIGGER statement.
+		if r == ';' && beginDepth == 0 {
 			statements = append(statements, current.String())
 			current.Reset()
 			continue

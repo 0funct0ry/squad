@@ -29,6 +29,10 @@ import { EditorState, Compartment } from '@codemirror/state';
 import { EditorView, keymap } from '@codemirror/view';
 import GeneratorPicker from './components/GeneratorPicker';
 import GeneratorOptionsForm from './components/GeneratorOptionsForm';
+import SandboxEmptyState from './components/SandboxEmptyState';
+import DbSwitcher from './components/DbSwitcher';
+import SandboxManagePage from './components/SandboxManagePage';
+import { apiFetch, apiUrl, setApiBase } from './lib/api';
 
 interface MetaData {
   name: string;
@@ -42,6 +46,14 @@ interface MetaData {
   journalMode: string;
   tableCount: number;
   viewCount: number;
+}
+
+interface SandboxDbEntry {
+  id: string;
+  displayName: string;
+  sizeBytes: number;
+  createdAt: string;
+  lastModifiedAt: string;
 }
 
 interface TableInfo {
@@ -326,7 +338,7 @@ function SqlEditor({ value, onChange, onRun, theme, editorViewRef }: SqlEditorPr
 }
 
 async function runQuery(sql: string, limit?: number): Promise<QueryResult> {
-  const res = await fetch('/api/query', {
+  const res = await apiFetch('/query', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ sql, limit }),
@@ -340,7 +352,7 @@ async function runQuery(sql: string, limit?: number): Promise<QueryResult> {
 }
 
 async function exportQuery(sql: string, format: string): Promise<Blob> {
-  const res = await fetch(`/api/export/query?format=${format}`, {
+  const res = await apiFetch(`/export/query?format=${format}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ sql }),
@@ -359,7 +371,7 @@ async function exportQuery(sql: string, format: string): Promise<Blob> {
 }
 
 async function createTable(data: any): Promise<any> {
-  const res = await fetch('/api/tables', {
+  const res = await apiFetch('/tables', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -373,7 +385,7 @@ async function createTable(data: any): Promise<any> {
 }
 
 async function alterTable(name: string, data: any): Promise<any> {
-  const res = await fetch(`/api/tables/${name}`, {
+  const res = await apiFetch(`/tables/${name}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -387,7 +399,7 @@ async function alterTable(name: string, data: any): Promise<any> {
 }
 
 async function dropTable(name: string): Promise<any> {
-  const res = await fetch(`/api/tables/${name}`, {
+  const res = await apiFetch(`/tables/${name}`, {
     method: 'DELETE',
   });
   const body = await res.json();
@@ -399,7 +411,7 @@ async function dropTable(name: string): Promise<any> {
 }
 
 async function insertRow(name: string, values: any): Promise<any> {
-  const res = await fetch(`/api/tables/${name}/rows`, {
+  const res = await apiFetch(`/tables/${name}/rows`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ values }),
@@ -413,7 +425,7 @@ async function insertRow(name: string, values: any): Promise<any> {
 }
 
 async function updateRow(name: string, key: any, values: any): Promise<any> {
-  const res = await fetch(`/api/tables/${name}/rows`, {
+  const res = await apiFetch(`/tables/${name}/rows`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ key, values }),
@@ -427,7 +439,7 @@ async function updateRow(name: string, key: any, values: any): Promise<any> {
 }
 
 async function deleteRow(name: string, key: any): Promise<any> {
-  const res = await fetch(`/api/tables/${name}/rows`, {
+  const res = await apiFetch(`/tables/${name}/rows`, {
     method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ key }),
@@ -441,7 +453,7 @@ async function deleteRow(name: string, key: any): Promise<any> {
 }
 
 async function getSeedPlan(name: string): Promise<SeedPlan> {
-  const res = await fetch(`/api/tables/${name}/seed/plan`);
+  const res = await apiFetch(`/tables/${name}/seed/plan`);
   const body = await res.json();
   if (!res.ok || !body.ok) {
     const err = body.error || { code: 'HTTP_ERROR', message: `HTTP error ${res.status}` };
@@ -454,7 +466,7 @@ async function seedTable(
   name: string,
   opts: { count: number; dryRun: boolean; columns: Record<string, { generator: string; options?: Record<string, any> }> }
 ): Promise<{ inserted: number } | { rows: Record<string, any>[] }> {
-  const res = await fetch(`/api/tables/${name}/seed`, {
+  const res = await apiFetch(`/tables/${name}/seed`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(opts),
@@ -557,12 +569,119 @@ export default function App() {
   const [exportQueryLoading, setExportQueryLoading] = useState<boolean>(false);
   const [lastExecutedSql, setLastExecutedSql] = useState<string>('');
 
+  // Sandbox mode state — normal (single-DB) mode is entirely unaffected by
+  // this: sandboxMode stays false and none of it renders.
+  const [sandboxMode, setSandboxMode] = useState<boolean>(false);
+  const [activeDbId, setActiveDbId] = useState<string | null>(null);
+  const [sandboxDbs, setSandboxDbs] = useState<SandboxDbEntry[]>([]);
+  const [sandboxManageOpen, setSandboxManageOpen] = useState<boolean>(false);
+
+  const refreshSandboxDbs = () => {
+    fetch('/api/sandbox/dbs')
+      .then((res) => res.json())
+      .then((body) => {
+        if (body.ok) setSandboxDbs(body.data ?? []);
+      })
+      .catch(console.error);
+  };
+
+  const switchActiveDb = (id: string) => {
+    setApiBase(`/api/sandbox/dbs/${id}`);
+    setActiveDbId(id);
+    setSandboxManageOpen(false);
+    setSelectedTable(null);
+    setSchema(null);
+    setSchemaError(null);
+    setRowsData(null);
+    setQueryResult(null);
+    setQueryError(null);
+    setTables([]);
+    setMeta(null);
+    setAllSchemas({});
+    setActiveTab('data');
+    setLoading(true);
+    setError(null);
+  };
+
+  const handleSandboxUpload = async (file: File, name?: string): Promise<boolean> => {
+    const form = new FormData();
+    form.append('file', file);
+    if (name) form.append('name', name);
+    try {
+      const res = await fetch('/api/sandbox/dbs', { method: 'POST', body: form });
+      const body = await res.json();
+      if (!body.ok) {
+        throw new Error(body.error?.message || 'Upload failed');
+      }
+      refreshSandboxDbs();
+      switchActiveDb(body.data.id);
+      return true;
+    } catch (err: any) {
+      throw new Error(err.message || 'Upload failed');
+    }
+  };
+
+  const handleSandboxCreate = async (name: string): Promise<boolean> => {
+    try {
+      const res = await fetch('/api/sandbox/dbs/new', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      const body = await res.json();
+      if (!body.ok) {
+        throw new Error(body.error?.message || 'Failed to create database');
+      }
+      refreshSandboxDbs();
+      switchActiveDb(body.data.id);
+      return true;
+    } catch (err: any) {
+      throw new Error(err.message || 'Failed to create database');
+    }
+  };
+
+  const handleSandboxRename = async (id: string, displayName: string) => {
+    try {
+      const res = await fetch(`/api/sandbox/dbs/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ displayName }),
+      });
+      const body = await res.json();
+      if (!body.ok) throw new Error(body.error?.message || 'Rename failed');
+      refreshSandboxDbs();
+    } catch (err: any) {
+      setToast({ message: err.message || 'Rename failed', type: 'error' });
+      setTimeout(() => setToast(null), 5000);
+    }
+  };
+
+  const handleSandboxDelete = async (id: string) => {
+    try {
+      const res = await fetch(`/api/sandbox/dbs/${id}`, { method: 'DELETE' });
+      const body = await res.json();
+      if (!body.ok) throw new Error(body.error?.message || 'Delete failed');
+      refreshSandboxDbs();
+      if (id === activeDbId) {
+        setApiBase('/api');
+        setActiveDbId(null);
+      }
+    } catch (err: any) {
+      setToast({ message: err.message || 'Delete failed', type: 'error' });
+      setTimeout(() => setToast(null), 5000);
+    }
+  };
+
+  const handleSandboxDownload = (id: string) => {
+    window.location.href = `/api/sandbox/dbs/${id}/download`;
+  };
+
   const fetchMetaAndTables = () => {
     setInfoLoading(true);
     setInfoError(null);
     Promise.all([
-      fetch('/api/meta').then(res => res.json()),
-      fetch('/api/tables').then(res => res.json())
+      apiFetch('/meta').then(res => res.json()),
+      apiFetch('/tables').then(res => res.json())
     ])
       .then(([metaBody, tablesBody]) => {
         if (metaBody.ok) {
@@ -792,7 +911,7 @@ export default function App() {
       setAddColDefault('');
       
       // Reload schema
-      const res = await fetch(`/api/tables/${selectedTable.name}/schema`);
+      const res = await apiFetch(`/tables/${selectedTable.name}/schema`);
       const body = await res.json();
       if (body.ok) setSchema(body.data);
     } catch (err: any) {
@@ -820,7 +939,7 @@ export default function App() {
       });
       
       // Reload schema
-      const res = await fetch(`/api/tables/${selectedTable.name}/schema`);
+      const res = await apiFetch(`/tables/${selectedTable.name}/schema`);
       const body = await res.json();
       if (body.ok) setSchema(body.data);
     } catch (err: any) {
@@ -849,7 +968,7 @@ export default function App() {
       setTimeout(() => setToast(null), 5000);
       
       // Reload schema
-      const res = await fetch(`/api/tables/${selectedTable.name}/schema`);
+      const res = await apiFetch(`/tables/${selectedTable.name}/schema`);
       const body = await res.json();
       if (body.ok) setSchema(body.data);
     } catch (err: any) {
@@ -871,7 +990,7 @@ export default function App() {
       setAddFk(emptyFkDraft());
 
       // Reload schema
-      const res = await fetch(`/api/tables/${selectedTable.name}/schema`);
+      const res = await apiFetch(`/tables/${selectedTable.name}/schema`);
       const body = await res.json();
       if (body.ok) {
         setSchema(body.data);
@@ -885,7 +1004,7 @@ export default function App() {
   const handleDropForeignKeyClick = async (fk: ForeignKeyInfo) => {
     if (!selectedTable || !isWrite) return;
     // Refetch schema first since foreign key ids are not stable across mutations.
-    const res = await fetch(`/api/tables/${selectedTable.name}/schema`);
+    const res = await apiFetch(`/tables/${selectedTable.name}/schema`);
     const body = await res.json();
     if (body.ok) {
       setSchema(body.data);
@@ -908,7 +1027,7 @@ export default function App() {
       setToast({ message: 'Foreign key dropped successfully!', type: 'success' });
       setTimeout(() => setToast(null), 3000);
 
-      const res = await fetch(`/api/tables/${selectedTable.name}/schema`);
+      const res = await apiFetch(`/tables/${selectedTable.name}/schema`);
       const body = await res.json();
       if (body.ok) {
         setSchema(body.data);
@@ -1013,7 +1132,7 @@ export default function App() {
       const col = seedPlan.columns.find((c) => c.name === colName);
       const affinity = col && meta.affinities.includes(sqliteAffinity(col.type)) ? sqliteAffinity(col.type) : meta.affinities[0];
       if (!affinity) return;
-      fetch(`/api/seed/generators/${encodeURIComponent(sel.generator)}/sample?affinity=${encodeURIComponent(affinity)}`)
+      apiFetch(`/seed/generators/${encodeURIComponent(sel.generator)}/sample?affinity=${encodeURIComponent(affinity)}`)
         .then((res) => res.json())
         .then((body) => {
           if (!body.ok) return;
@@ -1216,24 +1335,46 @@ export default function App() {
     }
   }, [theme]);
 
-  // Fetch Meta & Tables
+  // Detect sandbox mode (no fixed db — /api/meta doesn't exist) vs normal
+  // single-DB mode, then fetch meta & tables only in the latter case.
   useEffect(() => {
-    fetchMetaAndTables();
+    fetch('/api/meta')
+      .then((res) => {
+        if (res.status === 404) {
+          setSandboxMode(true);
+          setLoading(false);
+          refreshSandboxDbs();
+          return null;
+        }
+        return res;
+      })
+      .then((res) => {
+        if (res) fetchMetaAndTables();
+      })
+      .catch(() => fetchMetaAndTables());
   }, []);
 
   // Refetch when entering Info tab
   useEffect(() => {
-    if (activeTab === 'info') {
+    if (activeTab === 'info' && (!sandboxMode || activeDbId)) {
       fetchMetaAndTables();
     }
   }, [activeTab]);
+
+  // Switching the active sandbox db is a full navigation: re-fetch this
+  // db's meta/tables once its id becomes active.
+  useEffect(() => {
+    if (sandboxMode && activeDbId) {
+      fetchMetaAndTables();
+    }
+  }, [activeDbId]);
 
   // Background fetch all schemas when in editor tab to inspect foreign keys
   useEffect(() => {
     if (activeTab === 'editor' && tables.length > 0) {
       tables.forEach(t => {
         if (!allSchemas[t.name]) {
-          fetch(`/api/tables/${t.name}/schema`)
+          apiFetch(`/tables/${t.name}/schema`)
             .then(res => res.json())
             .then(body => {
               if (body.ok && body.data) {
@@ -1262,7 +1403,7 @@ export default function App() {
     setInlineAddRow(null);
     setEditingRowIndex(null);
 
-    fetch(`/api/tables/${selectedTable.name}/schema`)
+    apiFetch(`/tables/${selectedTable.name}/schema`)
       .then(res => res.json())
       .then(body => {
         if (body.ok && body.data) {
@@ -1316,7 +1457,7 @@ export default function App() {
     if (!selectedTable) return;
 
     const offset = (page - 1) * pageSize;
-    let url = `/api/tables/${selectedTable.name}/rows?limit=${pageSize}&offset=${offset}`;
+    let url = `/tables/${selectedTable.name}/rows?limit=${pageSize}&offset=${offset}`;
     if (orderBy) {
       url += `&orderBy=${orderBy}&dir=${dir}`;
     }
@@ -1326,7 +1467,7 @@ export default function App() {
       }
     });
 
-    fetch(url)
+    apiFetch(url)
       .then(res => res.json())
       .then(body => {
         if (body.ok && body.data) {
@@ -1421,6 +1562,44 @@ export default function App() {
           </button>
         </div>
       </div>
+    );
+  }
+
+  const showSandboxError = (message: string) => {
+    setToast({ message, type: 'error' });
+    setTimeout(() => setToast(null), 5000);
+  };
+
+  if (sandboxMode && sandboxManageOpen) {
+    return (
+      <SandboxManagePage
+        dbs={sandboxDbs}
+        activeDbId={activeDbId}
+        onBack={() => setSandboxManageOpen(false)}
+        onSwitch={switchActiveDb}
+        onRename={handleSandboxRename}
+        onDelete={handleSandboxDelete}
+        onDownload={handleSandboxDownload}
+        onUpload={handleSandboxUpload}
+        onCreate={handleSandboxCreate}
+        onError={showSandboxError}
+        theme={theme}
+        toggleTheme={toggleTheme}
+      />
+    );
+  }
+
+  if (sandboxMode && !activeDbId) {
+    return (
+      <SandboxEmptyState
+        dbs={sandboxDbs}
+        onUpload={handleSandboxUpload}
+        onCreate={handleSandboxCreate}
+        onSelect={switchActiveDb}
+        onError={showSandboxError}
+        theme={theme}
+        toggleTheme={toggleTheme}
+      />
     );
   }
 
@@ -1598,6 +1777,20 @@ export default function App() {
           <span className="font-mono text-xs text-slate-400 dark:text-slate-500 hidden sm:inline">
             {dbName} · sqlite {sqliteVer} · {dbSize}
           </span>
+          {sandboxMode && (
+            <DbSwitcher
+              activeDbId={activeDbId}
+              dbs={sandboxDbs}
+              onSwitch={switchActiveDb}
+              onRename={handleSandboxRename}
+              onDelete={handleSandboxDelete}
+              onDownload={handleSandboxDownload}
+              onUpload={handleSandboxUpload}
+              onCreate={handleSandboxCreate}
+              onError={showSandboxError}
+              onOpenManage={() => setSandboxManageOpen(true)}
+            />
+          )}
         </div>
         <div className="flex items-center gap-2">
           <span className="font-mono text-xs text-slate-400 hidden md:inline">127.0.0.1:7071</span>
@@ -3025,7 +3218,7 @@ export default function App() {
                   <button
                     onClick={() => {
                       setSelectedExportFormat('csv');
-                      let url = `/api/tables/${encodeURIComponent(selectedTable.name)}/export?format=csv`;
+                      let url = `/tables/${encodeURIComponent(selectedTable.name)}/export?format=csv`;
                       if (applyFilterSort && (orderBy || Object.values(filters).some(v => v !== ''))) {
                         url += `&filtered=true`;
                         if (orderBy) url += `&orderBy=${encodeURIComponent(orderBy)}`;
@@ -3034,7 +3227,7 @@ export default function App() {
                           if (val !== '') url += `&filter[${encodeURIComponent(col)}]=${encodeURIComponent(val)}`;
                         });
                       }
-                      window.location.href = url;
+                      window.location.href = apiUrl(url);
                     }}
                     className={`p-4 rounded-lg border text-left transition-all cursor-pointer ${
                       selectedExportFormat === 'csv'
@@ -3054,7 +3247,7 @@ export default function App() {
                   <button
                     onClick={() => {
                       setSelectedExportFormat('json');
-                      let url = `/api/tables/${encodeURIComponent(selectedTable.name)}/export?format=json`;
+                      let url = `/tables/${encodeURIComponent(selectedTable.name)}/export?format=json`;
                       if (applyFilterSort && (orderBy || Object.values(filters).some(v => v !== ''))) {
                         url += `&filtered=true`;
                         if (orderBy) url += `&orderBy=${encodeURIComponent(orderBy)}`;
@@ -3063,7 +3256,7 @@ export default function App() {
                           if (val !== '') url += `&filter[${encodeURIComponent(col)}]=${encodeURIComponent(val)}`;
                         });
                       }
-                      window.location.href = url;
+                      window.location.href = apiUrl(url);
                     }}
                     className={`p-4 rounded-lg border text-left transition-all cursor-pointer ${
                       selectedExportFormat === 'json'
@@ -3080,7 +3273,7 @@ export default function App() {
                   <button
                     onClick={() => {
                       setSelectedExportFormat('sql');
-                      let url = `/api/tables/${encodeURIComponent(selectedTable.name)}/export?format=sql`;
+                      let url = `/tables/${encodeURIComponent(selectedTable.name)}/export?format=sql`;
                       if (applyFilterSort && (orderBy || Object.values(filters).some(v => v !== ''))) {
                         url += `&filtered=true`;
                         if (orderBy) url += `&orderBy=${encodeURIComponent(orderBy)}`;
@@ -3092,7 +3285,7 @@ export default function App() {
                       if (includeSchema) {
                         url += `&includeSchema=true`;
                       }
-                      window.location.href = url;
+                      window.location.href = apiUrl(url);
                     }}
                     className={`p-4 rounded-lg border text-left transition-all cursor-pointer ${
                       selectedExportFormat === 'sql'

@@ -2,6 +2,7 @@ package db
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -146,5 +147,35 @@ SELECT 2; /* comment ; */ SELECT 3;`
 	// Semicolons inside comments should be ignored.
 	if len(got) != 3 {
 		t.Errorf("expected 3 statements, got %d: %q", len(got), got)
+	}
+}
+
+func TestSplitStatementsTriggerBody(t *testing.T) {
+	sql := `CREATE TABLE users (id INTEGER PRIMARY KEY, updated_at TEXT);
+CREATE TRIGGER trg_users_updated_at
+AFTER UPDATE ON users
+BEGIN
+    UPDATE users SET updated_at = STRFTIME('%Y-%m-%d %H:%M:%S','now') WHERE id = NEW.id;
+END;
+CREATE TABLE products (id INTEGER PRIMARY KEY);`
+
+	got, err := SplitStatements(sql)
+	if err != nil {
+		t.Fatalf("SplitStatements error: %v", err)
+	}
+	// The semicolon inside the trigger body must not split the CREATE
+	// TRIGGER statement in two — expect exactly 3 statements: the two
+	// CREATE TABLEs and one CREATE TRIGGER (body intact).
+	if len(got) != 3 {
+		t.Fatalf("expected 3 statements, got %d: %q", len(got), got)
+	}
+	if !strings.Contains(got[1], "BEGIN") || !strings.Contains(got[1], "END") {
+		t.Errorf("expected trigger statement to contain full BEGIN...END body, got: %q", got[1])
+	}
+	if !strings.Contains(got[1], "UPDATE users SET updated_at") {
+		t.Errorf("expected trigger body's inner UPDATE to remain part of the same statement, got: %q", got[1])
+	}
+	if strings.TrimSpace(got[2]) != "CREATE TABLE products (id INTEGER PRIMARY KEY)" {
+		t.Errorf("expected trailing CREATE TABLE to be its own statement, got: %q", got[2])
 	}
 }
