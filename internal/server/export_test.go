@@ -61,7 +61,7 @@ func TestServerExportTable(t *testing.T) {
 		t.Fatalf("failed to seed database: %v", err)
 	}
 
-	srv := NewServer(dbConn, "test.db", false, false)
+	srv := NewServer(dbConn, "test.db", false, false, false, "127.0.0.1", 7072)
 
 	t.Run("CSV Export Default", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/api/tables/users/export?format=csv", nil)
@@ -196,7 +196,7 @@ func TestServerQueryExport(t *testing.T) {
 		t.Fatalf("failed to seed: %v", err)
 	}
 
-	srv := NewServer(dbConn, "test.db", true, false) // server in write mode
+	srv := NewServer(dbConn, "test.db", true, false, false, "127.0.0.1", 7072) // server in write mode
 
 	t.Run("Query Export CSV", func(t *testing.T) {
 		body := `{"sql": "SELECT name FROM items ORDER BY id DESC"}`
@@ -245,7 +245,7 @@ func TestStreamingLargeExportMemory(t *testing.T) {
 	}
 	defer dbConn.Close()
 
-	srv := NewServer(dbConn, "test.db", false, false)
+	srv := NewServer(dbConn, "test.db", false, false, false, "127.0.0.1", 7072)
 
 	// We'll write to a custom tracker to measure write sizes and count
 	tracker := &maxWriteTrackingWriter{}

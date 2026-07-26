@@ -35,6 +35,7 @@ import DbSwitcher from './components/DbSwitcher';
 import SandboxManagePage from './components/SandboxManagePage';
 import ExamplesPicker, { type ExampleMeta } from './components/ExamplesPicker';
 import ConfirmModal from './components/ConfirmModal';
+import RestTab from './components/RestTab';
 import { apiFetch, apiUrl, setApiBase } from './lib/api';
 
 interface MetaData {
@@ -590,6 +591,20 @@ export default function App() {
   };
 
   const switchActiveDb = (id: string) => {
+    fetch('/api/sandbox/dbs/active', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    })
+      .then((res) => res.json())
+      .then((body) => {
+        if (body.ok && body.data?.restStopped) {
+          setToast({ message: 'REST server stopped: active database changed', type: 'error' });
+          setTimeout(() => setToast(null), 5000);
+        }
+      })
+      .catch(console.error);
+
     setApiBase(`/api/sandbox/dbs/${id}`);
     setActiveDbId(id);
     setSandboxManageOpen(false);
@@ -1982,6 +1997,16 @@ export default function App() {
                     </span>
                   </h2>
                   <div className="flex items-center gap-2 text-sm">
+                    <button
+                      onClick={() => {
+                        fetchMetaAndTables();
+                        setRefetchTrigger((prev) => prev + 1);
+                      }}
+                      className="p-1.5 rounded-md border border-slate-200 dark:border-slate-700 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-850"
+                      title="Refresh — picks up rows/changes made outside this UI (e.g. via /rest/*)"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                    </button>
                     <button
                       onClick={handleAddRowClick}
                       className={`px-2.5 py-1 rounded-md border border-slate-200 dark:border-slate-700 ${
@@ -3397,12 +3422,13 @@ export default function App() {
 
             {/* REST PANEL */}
             {activeTab === 'rest' && (
-              <section className="space-y-4">
-                <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40 text-sm px-4 py-2.5">
-                  REST serving is <span className="text-slate-400">off</span>. Relaunch with{' '}
-                  <span className="font-mono">--rest</span> to expose tables.
-                </div>
-              </section>
+              <RestTab
+                selectedTable={selectedTable}
+                onToast={(message, type) => {
+                  setToast({ message, type });
+                  setTimeout(() => setToast(null), type === 'error' ? 5000 : 3000);
+                }}
+              />
             )}
 
             {/* CODEGEN PANEL */}

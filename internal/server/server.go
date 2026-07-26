@@ -3,12 +3,14 @@ package server
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/0funct0ry/squad/internal/db"
+	"github.com/0funct0ry/squad/internal/restserver"
 	"github.com/0funct0ry/squad/web"
 	"github.com/gin-gonic/gin"
 )
@@ -20,9 +22,42 @@ type Server struct {
 	write    bool
 	examples bool
 	registry *db.Registry // non-nil in sandbox mode; nil for the single-DB flow
+
+	restManager *restserver.Manager
+	restConfigs *restserver.ConfigStore
 }
 
-func NewServer(database *sql.DB, dbPath string, write bool, examplesEnabled bool) *Server {
+// singleDBProvider implements restserver.DBProvider for the fixed single-DB
+// flow: there is exactly one connection and one scope ("").
+type singleDBProvider struct {
+	db     *sql.DB
+	dbPath string
+}
+
+func (p *singleDBProvider) CurrentDB() (*sql.DB, string, string, error) {
+	return p.db, "", p.dbPath, nil
+}
+
+// sandboxDBProvider implements restserver.DBProvider for sandbox mode: the
+// connection to serve is whichever sandbox database is currently marked
+// active (there is no /rest/:dbId/:table form — see SPEC §5.7).
+type sandboxDBProvider struct {
+	registry *db.Registry
+}
+
+func (p *sandboxDBProvider) CurrentDB() (*sql.DB, string, string, error) {
+	id, ok := p.registry.ActiveID()
+	if !ok {
+		return nil, "", "", fmt.Errorf("no active sandbox database selected")
+	}
+	entry, ok := p.registry.Get(id)
+	if !ok {
+		return nil, "", "", fmt.Errorf("active sandbox database %q no longer exists", id)
+	}
+	return entry.DB, entry.ID, entry.DisplayName, nil
+}
+
+func NewServer(database *sql.DB, dbPath string, write bool, examplesEnabled bool, restEnabled bool, restBindAddr string, restPort int) *Server {
 	// Disable debug logs by default to keep output clean, unless needed
 	gin.SetMode(gin.ReleaseMode)
 
@@ -34,6 +69,9 @@ func NewServer(database *sql.DB, dbPath string, write bool, examplesEnabled bool
 		examples: examplesEnabled,
 	}
 
+	s.restConfigs = restserver.NewConfigStore()
+	s.restManager = restserver.NewManager(restEnabled, write, restBindAddr, restPort, &singleDBProvider{db: database, dbPath: dbPath}, s.restConfigs)
+
 	s.router.Use(gin.Recovery())
 	s.setupRoutes()
 	return s
@@ -41,14 +79,22 @@ func NewServer(database *sql.DB, dbPath string, write bool, examplesEnabled bool
 
 // NewSandboxServer starts a Server with no fixed database — every request is
 // routed through the registry to a per-database connection instead.
-func NewSandboxServer(registry *db.Registry, examplesEnabled bool) *Server {
+func NewSandboxServer(registry *db.Registry, examplesEnabled bool, restEnabled bool, restBindAddr string, restPort int) *Server {
 	gin.SetMode(gin.ReleaseMode)
 
 	s := &Server{
-		router:   gin.New(),
+		router: gin.New(),
+		// Sandbox databases are always read-write — this also feeds the
+		// REST control routes' writeAllowed/toggle-validation logic
+		// (handleRestListTables/handleRestUpdateTableConfig), which read
+		// s.write directly rather than going through restManager.
+		write:    true,
 		registry: registry,
 		examples: examplesEnabled,
 	}
+
+	s.restConfigs = restserver.NewConfigStore()
+	s.restManager = restserver.NewManager(restEnabled, true, restBindAddr, restPort, &sandboxDBProvider{registry: registry}, s.restConfigs)
 
 	s.router.Use(gin.Recovery())
 	s.setupRoutes()
@@ -62,6 +108,7 @@ func (s *Server) setupRoutes() {
 	} else {
 		s.setupSandboxRoutes(api)
 	}
+	s.registerRestControlRoutes(api)
 
 	// Embedded SPA serving
 	distFS, err := fs.Sub(web.Assets, "dist")
@@ -257,4 +304,10 @@ func (s *Server) Start(addr string) error {
 
 func (s *Server) Handler() http.Handler {
 	return s.router
+}
+
+// StopRest stops the REST listener, if running. Safe to call unconditionally
+// (e.g. on process shutdown) even if the listener was never started.
+func (s *Server) StopRest() {
+	_ = s.restManager.Stop("process exit")
 }

@@ -32,7 +32,7 @@ func TestQueryHandlers(t *testing.T) {
 	}
 
 	// 1. Test plain SELECT in read-only server
-	srv := NewServer(database, ":memory:", false, false) // write = false
+	srv := NewServer(database, ":memory:", false, false, false, "127.0.0.1", 7072) // write = false
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -207,7 +207,7 @@ func TestQueryHandlers(t *testing.T) {
 	}
 
 	// Now start a write-enabled server
-	srvWrite := NewServer(database, ":memory:", true, false) // write = true
+	srvWrite := NewServer(database, ":memory:", true, false, false, "127.0.0.1", 7072) // write = true
 	tsWrite := httptest.NewServer(srvWrite.Handler())
 	defer tsWrite.Close()
 

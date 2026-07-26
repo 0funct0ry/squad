@@ -67,7 +67,7 @@ func TestSeedPlanEndpoint(t *testing.T) {
 	}
 	defer database.Close()
 
-	srv := NewServer(database, dbPath, true, false)
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -117,7 +117,7 @@ func TestSeedPlan_ViewRejected(t *testing.T) {
 	}
 	defer database.Close()
 
-	srv := NewServer(database, dbPath, true, false)
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -148,7 +148,7 @@ func TestSeedDryRunDoesNotInsert(t *testing.T) {
 	}
 	defer database.Close()
 
-	srv := NewServer(database, dbPath, true, false)
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -192,7 +192,7 @@ func TestSeedInsertExactCount(t *testing.T) {
 	}
 	defer database.Close()
 
-	srv := NewServer(database, dbPath, true, false)
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -237,7 +237,7 @@ func TestSeedForeignKeyValuesValid(t *testing.T) {
 	}
 	defer database.Close()
 
-	srv := NewServer(database, dbPath, true, false)
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -302,7 +302,7 @@ func TestSeedEmptyReference(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv := NewServer(database, dbPath, true, false)
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -336,7 +336,7 @@ func TestSeedUniqueExhaustionRollsBack(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv := NewServer(database, dbPath, true, false)
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -378,7 +378,7 @@ func TestSeedCompositePKRetryGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv := NewServer(database, dbPath, true, false)
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -414,7 +414,7 @@ func TestSeedCountBounds(t *testing.T) {
 	}
 	defer database.Close()
 
-	srv := NewServer(database, dbPath, true, false)
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -444,7 +444,7 @@ func TestSeedUnknownGenerator(t *testing.T) {
 	}
 	defer database.Close()
 
-	srv := NewServer(database, dbPath, true, false)
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -477,7 +477,7 @@ func TestSeedReadOnlyGating(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv := NewServer(database, dbPath, false, false) // read-only
+	srv := NewServer(database, dbPath, false, false, false, "127.0.0.1", 7072) // read-only
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -521,7 +521,7 @@ func TestSeedFormulaCycleRejected_ZeroRowsInserted(t *testing.T) {
 	}
 	defer database.Close()
 
-	srv := NewServer(database, dbPath, true, false)
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -569,7 +569,7 @@ func TestSeedGeneratorSample_ValidPair(t *testing.T) {
 	}
 	defer database.Close()
 
-	srv := NewServer(database, dbPath, true, false)
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -596,7 +596,7 @@ func TestSeedGeneratorSample_UnknownGenerator(t *testing.T) {
 	}
 	defer database.Close()
 
-	srv := NewServer(database, dbPath, true, false)
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -620,7 +620,7 @@ func TestSeedGeneratorSample_ForeignKeyAndFormulaRejected(t *testing.T) {
 	}
 	defer database.Close()
 
-	srv := NewServer(database, dbPath, true, false)
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -646,7 +646,7 @@ func TestSeedEnumFromColumnValuesValid(t *testing.T) {
 	}
 	defer database.Close()
 
-	srv := NewServer(database, dbPath, true, false)
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -673,7 +673,7 @@ func TestSeedEnumFromColumnUnknownTableRejected(t *testing.T) {
 	}
 	defer database.Close()
 
-	srv := NewServer(database, dbPath, true, false)
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -703,7 +703,7 @@ func TestSeedEnumFromColumnUnknownColumnRejected(t *testing.T) {
 	}
 	defer database.Close()
 
-	srv := NewServer(database, dbPath, true, false)
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -733,7 +733,7 @@ func TestSeedNullWithProbabilityUnknownWrappedGeneratorRejected(t *testing.T) {
 	}
 	defer database.Close()
 
-	srv := NewServer(database, dbPath, true, false)
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -766,7 +766,7 @@ func TestSeedNullWithProbabilitySelfReferenceRejected(t *testing.T) {
 	}
 	defer database.Close()
 
-	srv := NewServer(database, dbPath, true, false)
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -799,7 +799,7 @@ func TestSeedNullWithProbabilityValidWrapWorks(t *testing.T) {
 	}
 	defer database.Close()
 
-	srv := NewServer(database, dbPath, true, false)
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -829,7 +829,7 @@ func TestSeedGeneratorSample_MalformedOptionsJSON(t *testing.T) {
 	}
 	defer database.Close()
 
-	srv := NewServer(database, dbPath, true, false)
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -853,7 +853,7 @@ func TestSeedGeneratorSample_AffinityMismatch(t *testing.T) {
 	}
 	defer database.Close()
 
-	srv := NewServer(database, dbPath, true, false)
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()

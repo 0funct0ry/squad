@@ -40,6 +40,7 @@ type Registry struct {
 	dir         string
 	maxUploadMB int64
 	entries     map[string]*RegistryEntry
+	activeID    string
 }
 
 // NewRegistry creates a Registry rooted at dir, enforcing maxUploadBytes on
@@ -200,6 +201,37 @@ func (r *Registry) registerOpened(id, path, displayName string) (*RegistryEntry,
 	r.mu.Unlock()
 
 	return entry, nil
+}
+
+// SetActive marks id as the currently active sandbox database, used by the
+// REST subsystem to resolve "the currently active DB" (there is no
+// /rest/:dbId/:table form). Returns an error if id is unknown.
+func (r *Registry) SetActive(id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.entries[id]; !ok {
+		return fmt.Errorf("sandbox db %q not found", id)
+	}
+	r.activeID = id
+	return nil
+}
+
+// ActiveID returns the currently active sandbox database id, if any has been
+// set via SetActive.
+func (r *Registry) ActiveID() (string, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.activeID, r.activeID != ""
+}
+
+// ClearActiveIfMatches unsets the active id if it currently equals id. Used
+// when the active entry is deleted.
+func (r *Registry) ClearActiveIfMatches(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.activeID == id {
+		r.activeID = ""
+	}
 }
 
 // Get returns the entry for id, if present.

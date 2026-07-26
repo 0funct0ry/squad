@@ -22,8 +22,8 @@ var (
 
 type Config struct {
 	commonFlags
+	restFlags
 	Write          bool
-	Rest           bool
 	ReadOnlyPragma bool
 	Examples       bool
 }
@@ -39,6 +39,7 @@ var rootCmd = &cobra.Command{
 	Args:    cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		applyExamplesEnvOverride(cmd.Flags().Changed("examples"), &cfg.Examples)
+		applyRestEnvOverrides(cmd, &cfg.restFlags)
 
 		dbPath := args[0]
 		resolvedPath := dbPath
@@ -68,10 +69,18 @@ var rootCmd = &cobra.Command{
 		}
 		defer database.Close()
 
+		warnIfBroadcastBind("--addr", cfg.Addr)
+		if cfg.Rest {
+			warnIfBroadcastBind("--rest-bind-addr", cfg.RestBindAddr)
+		}
+
 		// Start the server
-		srv := server.NewServer(database, resolvedPath, cfg.Write, cfg.Examples)
+		srv := server.NewServer(database, resolvedPath, cfg.Write, cfg.Examples, cfg.Rest, cfg.RestBindAddr, cfg.RestPort)
 		addr := fmt.Sprintf("%s:%d", cfg.Addr, cfg.Port)
 		fmt.Printf("  address  : http://%s\n", addr)
+		if cfg.Rest {
+			fmt.Printf("  rest     : capability enabled (start it from the REST tab) on %s:%d\n", cfg.RestBindAddr, cfg.RestPort)
+		}
 		fmt.Println("  press Ctrl+C to stop")
 
 		// If Open is true, open default browser after a short delay
@@ -82,10 +91,7 @@ var rootCmd = &cobra.Command{
 			}()
 		}
 
-		if err := srv.Start(addr); err != nil {
-			fmt.Printf("Error starting server: %v\n", err)
-			os.Exit(1)
-		}
+		runServeWithGracefulShutdown(srv, addr, nil)
 	},
 }
 
@@ -118,8 +124,8 @@ func init() {
 
 	// Bind flags to Config struct
 	registerCommonFlags(rootCmd.Flags(), &cfg.commonFlags)
+	registerRestFlags(rootCmd.Flags(), &cfg.restFlags)
 	rootCmd.Flags().BoolVarP(&cfg.Write, "write", "w", false, "Enable mutations (DDL, DML, write operations)")
-	rootCmd.Flags().BoolVarP(&cfg.Rest, "rest", "r", false, "Enable auto REST endpoints for tables")
 	rootCmd.Flags().BoolVarP(&cfg.ReadOnlyPragma, "read-only-pragma", "R", true, "Open SQLite with mode=ro when not --write")
 	rootCmd.Flags().BoolVarP(&cfg.Examples, "examples", "e", false, "Enable the canned example data-model library")
 }

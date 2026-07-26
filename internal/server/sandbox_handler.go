@@ -20,6 +20,7 @@ func (s *Server) setupSandboxRoutes(api *gin.RouterGroup) {
 		sandbox.DELETE("/:id", s.handleSandboxDeleteDB)
 		sandbox.PATCH("/:id", s.handleSandboxRenameDB)
 		sandbox.GET("/:id/download", s.handleSandboxDownloadDB)
+		sandbox.POST("/active", s.handleSandboxSetActive)
 	}
 
 	scoped := sandbox.Group("/:id")
@@ -210,6 +211,9 @@ func (s *Server) handleSandboxCreateDB(c *gin.Context) {
 // DELETE /api/sandbox/dbs/:id
 func (s *Server) handleSandboxDeleteDB(c *gin.Context) {
 	id := c.Param("id")
+	activeID, hasActive := s.registry.ActiveID()
+	wasActive := hasActive && activeID == id
+
 	if err := s.registry.Remove(id); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{
 			"ok":    false,
@@ -217,6 +221,13 @@ func (s *Server) handleSandboxDeleteDB(c *gin.Context) {
 		})
 		return
 	}
+
+	s.registry.ClearActiveIfMatches(id)
+	s.restConfigs.Forget(id)
+	if wasActive {
+		s.restManager.NotifyActiveDBChanged("")
+	}
+
 	c.JSON(http.StatusOK, gin.H{"ok": true, "data": gin.H{"id": id}})
 }
 

@@ -22,3 +22,19 @@ func registerCommonFlags(fs *pflag.FlagSet, c *commonFlags) {
 	fs.StringVarP(&c.Token, "token", "t", "", "Optional bearer token gate for the API")
 	fs.StringVarP(&c.LogLevel, "log-level", "l", "info", "Log level (debug/info/warn/error)")
 }
+
+// restFlags holds the flags shared between the root command and `squad
+// sandbox` for the auto-REST capability (SPEC.md §5.7): --rest unlocks it,
+// --rest-port/--rest-bind-addr configure the separate listener it uses once
+// the user starts it from the REST tab.
+type restFlags struct {
+	Rest         bool
+	RestPort     int
+	RestBindAddr string
+}
+
+func registerRestFlags(fs *pflag.FlagSet, r *restFlags) {
+	fs.BoolVarP(&r.Rest, "rest", "r", false, "Enable auto REST endpoints for tables")
+	fs.IntVar(&r.RestPort, "rest-port", 7072, "Port for the separate REST listener (distinct from --port)")
+	fs.StringVar(&r.RestBindAddr, "rest-bind-addr", "127.0.0.1", "Bind address for the REST listener")
+}

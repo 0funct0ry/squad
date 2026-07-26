@@ -1,13 +1,9 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
-	"net/http"
 	"os"
-	"os/signal"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	"github.com/0funct0ry/squad/internal/db"
@@ -15,12 +11,15 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// SandboxConfig holds flags specific to `squad sandbox`. --write, --rest and
+// SandboxConfig holds flags specific to `squad sandbox`. --write and
 // --read-only-pragma intentionally have no equivalent here: sandbox
 // databases are always opened read-write and there is no READ_ONLY code
-// path for them.
+// path for them. --rest/--rest-port/--rest-bind-addr are supported, same as
+// root mode, except /rest/* always resolves against whichever sandbox
+// database is currently active (SPEC §5.7).
 type SandboxConfig struct {
 	commonFlags
+	restFlags
 	Dir         string
 	MaxUploadMB int64
 	Examples    bool
@@ -41,6 +40,7 @@ opened in sandbox mode is always read-write.`,
 
 func init() {
 	registerCommonFlags(sandboxCmd.Flags(), &sandboxCfg.commonFlags)
+	registerRestFlags(sandboxCmd.Flags(), &sandboxCfg.restFlags)
 	sandboxCmd.Flags().StringVar(&sandboxCfg.Dir, "dir", "", "Directory to store sandbox database files (env SQUAD_SANDBOX_DIR); defaults to a fresh temp dir")
 	sandboxCmd.Flags().Int64Var(&sandboxCfg.MaxUploadMB, "max-upload-size", 512, "Max upload size in MB for sandbox database files")
 	sandboxCmd.Flags().BoolVarP(&sandboxCfg.Examples, "examples", "e", false, "Enable the canned example data-model library")
@@ -49,6 +49,7 @@ func init() {
 
 func runSandbox(cmd *cobra.Command, args []string) {
 	applyExamplesEnvOverride(cmd.Flags().Changed("examples"), &sandboxCfg.Examples)
+	applyRestEnvOverrides(cmd, &sandboxCfg.restFlags)
 
 	dir := sandboxCfg.Dir
 	dirExplicitlySet := cmd.Flags().Changed("dir")
@@ -95,12 +96,20 @@ func runSandbox(cmd *cobra.Command, args []string) {
 		}
 	}
 
+	warnIfBroadcastBind("--addr", sandboxCfg.Addr)
+	if sandboxCfg.Rest {
+		warnIfBroadcastBind("--rest-bind-addr", sandboxCfg.RestBindAddr)
+	}
+
 	fmt.Printf("squad %s (sandbox mode)\n", Version)
 	fmt.Printf("  sandbox dir : %s\n", absDir)
 
-	srv := server.NewSandboxServer(registry, sandboxCfg.Examples)
+	srv := server.NewSandboxServer(registry, sandboxCfg.Examples, sandboxCfg.Rest, sandboxCfg.RestBindAddr, sandboxCfg.RestPort)
 	addr := fmt.Sprintf("%s:%d", sandboxCfg.Addr, sandboxCfg.Port)
 	fmt.Printf("  address     : http://%s\n", addr)
+	if sandboxCfg.Rest {
+		fmt.Printf("  rest        : capability enabled (start it from the REST tab) on %s:%d\n", sandboxCfg.RestBindAddr, sandboxCfg.RestPort)
+	}
 	fmt.Println("  press Ctrl+C to stop")
 
 	if sandboxCfg.Open {
@@ -110,29 +119,10 @@ func runSandbox(cmd *cobra.Command, args []string) {
 		}()
 	}
 
-	runSandboxServerWithGracefulShutdown(srv, addr, registry, cleanupTemp)
-}
-
-func runSandboxServerWithGracefulShutdown(srv *server.Server, addr string, registry *db.Registry, cleanupTemp bool) {
-	httpSrv := &http.Server{Addr: addr, Handler: srv.Handler()}
-
-	go func() {
-		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			fmt.Printf("Error starting server: %v\n", err)
-			os.Exit(1)
+	runServeWithGracefulShutdown(srv, addr, func() {
+		registry.CloseAll()
+		if cleanupTemp {
+			_ = os.RemoveAll(registry.Dir())
 		}
-	}()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	<-sigCh
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_ = httpSrv.Shutdown(ctx)
-
-	registry.CloseAll()
-	if cleanupTemp {
-		_ = os.RemoveAll(registry.Dir())
-	}
+	})
 }
