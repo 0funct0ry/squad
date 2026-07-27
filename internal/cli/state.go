@@ -1,0 +1,117 @@
+// Package cli implements `squad cli <db>`, an interactive terminal REPL that
+// behaves like the stock sqlite3 shell. It reuses internal/db's statement
+// classifier/splitter/schema introspection and internal/seed's generator
+// registry rather than reimplementing any of them.
+package cli
+
+import (
+	"database/sql"
+	"io"
+	"os"
+)
+
+// OutputMode names one of the .mode render formats.
+type OutputMode string
+
+const (
+	ModeAscii    OutputMode = "ascii"
+	ModeBox      OutputMode = "box"
+	ModeColumn   OutputMode = "column"
+	ModeCSV      OutputMode = "csv"
+	ModeJSON     OutputMode = "json"
+	ModeList     OutputMode = "list"
+	ModeMarkdown OutputMode = "markdown"
+	ModeTable    OutputMode = "table"
+	ModeTabs     OutputMode = "tabs"
+)
+
+// ValidModes lists every supported .mode value, in the order presented by
+// .help and used for .mode completion.
+var ValidModes = []OutputMode{ModeAscii, ModeBox, ModeColumn, ModeCSV, ModeJSON, ModeList, ModeMarkdown, ModeTable, ModeTabs}
+
+func IsValidMode(m string) bool {
+	for _, v := range ValidModes {
+		if string(v) == m {
+			return true
+		}
+	}
+	return false
+}
+
+// State holds all mutable REPL/session state: the DB handle, --write gate,
+// current .mode/.headers/.nullvalue/.output settings, and the completion
+// cache. It is shared by the REPL loop, the non-interactive paths, and the
+// dot-command dispatcher (all funnel through Execute in executor.go).
+type State struct {
+	DB    *sql.DB
+	Path  string
+	Write bool
+
+	Interactive bool
+	Colorized   bool // stdout is a TTY; suppress color when piped
+
+	Mode      OutputMode
+	Headers   bool
+	NullValue string
+
+	// Prompt/ContinuationPrompt are templates (see prompt.go's RenderPrompt):
+	// {db} expands to the database's display name, and color tags like
+	// {green}/{bold}/{reset} expand to ANSI escapes (or are stripped when not
+	// Colorized). Settable via ".prompt"/".prompt continuation".
+	Prompt             string
+	ContinuationPrompt string
+
+	// Out is where query results/dot-command output are written. Defaults to
+	// os.Stdout; redirected by .output/.once.
+	Out      io.Writer
+	onceFile *os.File // closed after the next statement if set via .once
+
+	// schema completion cache, invalidated after DDL (see executor.go)
+	tablesCache  []string
+	columnsCache map[string][]string
+	cacheValid   bool
+
+	// History records each top-level line/statement entered in the
+	// interactive REPL, in order, 1-indexed by position for .history and
+	// .history N (see repl.go/dotcommands.go). Not populated by the
+	// non-interactive inline-SQL/stdin/.read paths.
+	History []string
+
+	Quit bool
+}
+
+func NewState(database *sql.DB, path string, write bool, interactive bool) *State {
+	mode := ModeList
+	headers := false
+	if interactive {
+		mode = ModeColumn
+		headers = true
+	}
+	return &State{
+		DB:                 database,
+		Path:               path,
+		Write:              write,
+		Interactive:        interactive,
+		Mode:               mode,
+		Headers:            headers,
+		NullValue:          "",
+		Prompt:             DefaultPrompt,
+		ContinuationPrompt: DefaultContinuationPrompt,
+		Out:                os.Stdout,
+	}
+}
+
+// closeOnce closes and clears any .once redirect, restoring Out to stdout.
+func (s *State) closeOnceIfSet() {
+	if s.onceFile != nil {
+		s.onceFile.Close()
+		s.onceFile = nil
+		s.Out = os.Stdout
+	}
+}
+
+func (s *State) invalidateSchemaCache() {
+	s.cacheValid = false
+	s.tablesCache = nil
+	s.columnsCache = nil
+}

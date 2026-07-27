@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"sort"
 	"strings"
 	"unicode"
 )
@@ -56,6 +57,29 @@ var formulaFuncs = map[string]formulaFunc{
 	"max":   fnMax,
 	"pow":   fnPow,
 	"mod":   fnMod,
+}
+
+// FormulaFuncNames returns the sorted names of the whitelisted formula
+// functions, for exposing them (e.g. as CLI template functions) without
+// duplicating the formulaFuncs whitelist itself.
+func FormulaFuncNames() []string {
+	names := make([]string, 0, len(formulaFuncs))
+	for name := range formulaFuncs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// CallFormulaFunc invokes the named whitelisted formula function with the
+// given arguments. ok is false if name is not in the formulaFuncs whitelist.
+func CallFormulaFunc(name string, args []any) (result any, err error, ok bool) {
+	fn, ok := formulaFuncs[name]
+	if !ok {
+		return nil, nil, false
+	}
+	result, err = fn(args)
+	return result, err, true
 }
 
 func requireArgCount(name string, args []any, n int) error {
