@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="320" viewBox="0 0 1280 320">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0a0a0b"/>
+      <stop offset="100%" stop-color="#121214"/>
+    </linearGradient>
+    <linearGradient id="accentFade" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#22d3ee" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#22d3ee" stop-opacity="0.55"/>
+    </linearGradient>
+    <pattern id="dots" width="28" height="28" patternUnits="userSpaceOnUse">
+      <circle cx="1.4" cy="1.4" r="1.4" fill="#f5f5f4" fill-opacity="0.05"/>
+    </pattern>
+  </defs>
+
+  <!-- background -->
+  <rect width="1280" height="320" fill="url(#bg)"/>
+  <rect width="1280" height="320" fill="url(#dots)"/>
+
+  <!-- subtle top/bottom border accents -->
+  <rect x="0" y="0" width="1280" height="1" fill="#232326"/>
+  <rect x="0" y="319" width="1280" height="1" fill="#232326"/>
+  <rect x="0" y="0" width="420" height="2" fill="url(#accentFade)"/>
+
+  <!-- icon -->
+  <g transform="translate(96, 108)">
+    <rect width="104" height="104" rx="24" fill="#0a0a0b" stroke="#232326" stroke-width="1.5"/>
+    <path d="M29 39c0-5.39 5.82-9.75 13-9.75h19.5c7.18 0 13 4.36 13 9.75s-5.82 9.75-13 9.75H42c-7.18 0-13 4.36-13 9.75s5.82 9.75 13 9.75h19.5c7.18 0 13-4.36 13-9.75"
+      stroke="#22d3ee" stroke-width="7.8" stroke-linecap="round" fill="none"/>
+  </g>
+
+  <!-- wordmark -->
+  <text x="238" y="172" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="76" font-weight="700" letter-spacing="-2" fill="#f5f5f4">squad</text>
+
+  <!-- tagline -->
+  <text x="240" y="216" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="22" font-weight="400" fill="#a1a1aa">A single-binary dual mode SQLite client</text>
+
+  <!-- mono meta line -->
+  <text x="240" y="252" font-family="Menlo, Consolas, monospace" font-size="16" fill="#5a5a60">read-only by default &#183; zero install &#183; --write / --rest opt-in</text>
+</svg>

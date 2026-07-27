@@ -1,4 +1,6 @@
-# squad
+<p align="center">
+  <img src="assets/banner.png" alt="squad — a single-binary, web-based SQLite client" width="100%">
+</p>
 
 > A minimal, single-binary, dual mode (CLI + WebUI) SQLite client.
 
