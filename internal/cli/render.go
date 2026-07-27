@@ -25,6 +25,13 @@ func colorEligible(mode OutputMode) bool {
 // .headers/.nullvalue, and applying the item-4 color treatment when stdout
 // is a TTY and the mode is color-eligible.
 func (s *State) Render(cols []string, rows [][]any) error {
+	return s.renderTo(s.Out, cols, rows)
+}
+
+// renderTo is Render's implementation, parameterized on the destination
+// writer so ".save" can render a one-shot query's output to a file without
+// touching s.Out/.once state.
+func (s *State) renderTo(w io.Writer, cols []string, rows [][]any) error {
 	strRows := make([][]string, len(rows))
 	for i, row := range rows {
 		strRows[i] = make([]string, len(row))
@@ -37,25 +44,25 @@ func (s *State) Render(cols []string, rows [][]any) error {
 
 	switch s.Mode {
 	case ModeCSV:
-		return renderDelim(s.Out, cols, strRows, s.Headers, ',', true)
+		return renderDelim(w, cols, strRows, s.Headers, ',', true)
 	case ModeTabs:
-		return renderDelim(s.Out, cols, strRows, s.Headers, '\t', false)
+		return renderDelim(w, cols, strRows, s.Headers, '\t', false)
 	case ModeList:
-		return renderDelim(s.Out, cols, strRows, s.Headers, '|', false)
+		return renderDelim(w, cols, strRows, s.Headers, '|', false)
 	case ModeAscii:
-		return renderAscii(s.Out, cols, strRows, s.Headers)
+		return renderAscii(w, cols, strRows, s.Headers)
 	case ModeJSON:
-		return renderJSON(s.Out, cols, strRows)
+		return renderJSON(w, cols, strRows)
 	case ModeMarkdown:
-		return renderMarkdown(s.Out, cols, strRows, useColor)
+		return renderMarkdown(w, cols, strRows, useColor)
 	case ModeColumn:
-		return renderColumn(s.Out, cols, strRows, s.Headers, useColor)
+		return renderColumn(w, cols, strRows, s.Headers, useColor)
 	case ModeTable:
-		return renderBoxLike(s.Out, cols, strRows, s.Headers, useColor, tableBorder)
+		return renderBoxLike(w, cols, strRows, s.Headers, useColor, tableBorder)
 	case ModeBox:
-		return renderBoxLike(s.Out, cols, strRows, s.Headers, useColor, boxBorder)
+		return renderBoxLike(w, cols, strRows, s.Headers, useColor, boxBorder)
 	default:
-		return renderColumn(s.Out, cols, strRows, s.Headers, useColor)
+		return renderColumn(w, cols, strRows, s.Headers, useColor)
 	}
 }
 

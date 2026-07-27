@@ -17,6 +17,10 @@ var dotCommandNames = []string{
 	".help", ".tables", ".schema", ".indexes", ".databases", ".mode",
 	".headers", ".nullvalue", ".output", ".once", ".import", ".dump",
 	".read", ".templates", ".history", ".echo", ".prompt", ".quit", ".exit",
+	".edit", ".save", ".grep", ".rest", ".listener", ".token", ".timer",
+	".stats", ".explain", ".plan", ".bookmark", ".bookmarks", ".shell", ".sh",
+	".watch", ".open", ".backup", ".clone", ".seed", ".diff", ".constraints",
+	".size", ".stat", ".repeat",
 }
 
 const helpText = `.help                     show this message
@@ -41,6 +45,28 @@ const helpText = `.help                     show this message
 .prompt TEXT              set the main prompt; {db} expands to the db name, {red}/{green}/.../{bold}/{dim}/{reset} add color
 .prompt continuation TEXT set the continuation prompt (same {db}/color tags)
 .quit / .exit             exit the shell
+.edit -h N                open $EDITOR on history entry N (interactive only)
+.edit -c                  open $EDITOR seeded from the OS clipboard (interactive only)
+.save FILE "QUERY"        execute QUERY and write its rendered output to FILE
+.grep ?-r|--regex? PATTERN  filter the last result set's rows by PATTERN
+.rest ?--r|--rw|--rwd? TABLE   configure TABLE's REST exposure (--rw/--rwd need --write)
+.listener start|stop     start/stop the REST listener configured via .rest
+.token ?VALUE?            get/set a stored bearer token (not yet enforced)
+.timer on|off             print statement run time after each statement
+.stats on|off             print row/duration/schema-change stats after each statement
+.explain QUERY / .plan QUERY  show QUERY's EXPLAIN QUERY PLAN as an indented tree
+.bookmark ?save|load? ?NAME?  save/restore mode/headers/nullvalue/prompt/output as NAME
+.bookmarks                list saved bookmark names
+.shell CMD / .sh CMD      run CMD via $SHELL -c, inheriting stdio
+.watch SECONDS QUERY      re-run QUERY every SECONDS until Ctrl-C
+.open DB                  close the current db and reopen DB
+.backup FILE              VACUUM INTO FILE (errors if FILE exists)
+.clone TABLE NEW ?--data? recreate TABLE's DDL as NEW (--write); ?--data? copies rows too
+.seed TABLE N             insert N generated rows into TABLE (--write)
+.diff TABLE_A TABLE_B     compare two tables' columns
+.constraints TABLE        show PK/FK/NOT NULL/UNIQUE/CHECK constraints
+.size / .stat db          show database file/meta info
+.repeat N "QUERY"         run QUERY N times, re-expanding {{ }} templates fresh each time
 `
 
 // dispatchDotCommand parses and executes a dot-command line. ".echo" and
@@ -56,6 +82,34 @@ func (s *State) dispatchDotCommand(line string) {
 	}
 	if trimmed == ".prompt" || strings.HasPrefix(trimmed, ".prompt ") {
 		s.cmdPrompt(strings.TrimSpace(strings.TrimPrefix(trimmed, ".prompt")))
+		return
+	}
+	if trimmed == ".save" || strings.HasPrefix(trimmed, ".save ") {
+		s.cmdSave(strings.TrimSpace(strings.TrimPrefix(trimmed, ".save")))
+		return
+	}
+	if trimmed == ".explain" || strings.HasPrefix(trimmed, ".explain ") {
+		s.cmdExplain(strings.TrimSpace(strings.TrimPrefix(trimmed, ".explain")))
+		return
+	}
+	if trimmed == ".plan" || strings.HasPrefix(trimmed, ".plan ") {
+		s.cmdExplain(strings.TrimSpace(strings.TrimPrefix(trimmed, ".plan")))
+		return
+	}
+	if trimmed == ".shell" || strings.HasPrefix(trimmed, ".shell ") {
+		s.cmdShell(strings.TrimSpace(strings.TrimPrefix(trimmed, ".shell")))
+		return
+	}
+	if trimmed == ".sh" || strings.HasPrefix(trimmed, ".sh ") {
+		s.cmdShell(strings.TrimSpace(strings.TrimPrefix(trimmed, ".sh")))
+		return
+	}
+	if trimmed == ".watch" || strings.HasPrefix(trimmed, ".watch ") {
+		s.cmdWatch(strings.TrimSpace(strings.TrimPrefix(trimmed, ".watch")))
+		return
+	}
+	if trimmed == ".repeat" || strings.HasPrefix(trimmed, ".repeat ") {
+		s.cmdRepeat(strings.TrimSpace(strings.TrimPrefix(trimmed, ".repeat")))
 		return
 	}
 
@@ -103,6 +157,44 @@ func (s *State) dispatchDotCommand(line string) {
 		s.cmdTemplates(args)
 	case ".history":
 		s.cmdHistory(args)
+	case ".edit":
+		s.cmdEdit(args)
+	case ".grep":
+		s.cmdGrep(args)
+	case ".rest":
+		s.cmdRest(args)
+	case ".listener":
+		s.cmdListener(args)
+	case ".token":
+		s.cmdToken(args)
+	case ".timer":
+		s.cmdTimer(args)
+	case ".stats":
+		s.cmdStats(args)
+	case ".bookmark":
+		s.cmdBookmark(args)
+	case ".bookmarks":
+		s.cmdBookmarks()
+	case ".open":
+		s.cmdOpen(args)
+	case ".backup":
+		s.cmdBackup(args)
+	case ".clone":
+		s.cmdClone(args)
+	case ".seed":
+		s.cmdSeed(args)
+	case ".diff":
+		s.cmdDiff(args)
+	case ".constraints":
+		s.cmdConstraints(args)
+	case ".size":
+		s.cmdSize(args)
+	case ".stat":
+		if len(args) != 1 || args[0] != "db" {
+			s.shellError(fmt.Errorf("usage: .stat db"))
+			return
+		}
+		s.cmdSize(nil)
 	default:
 		s.shellError(fmt.Errorf("unknown command or invalid arguments: %q. Enter \".help\" for help", cmd))
 	}
@@ -277,6 +369,9 @@ func (s *State) cmdOutput(args []string, once bool) {
 	s.closeOnceIfSet()
 	if len(args) == 0 {
 		s.Out = os.Stdout
+		if !once {
+			s.outputFilePath = ""
+		}
 		return
 	}
 	f, err := os.Create(args[0])
@@ -287,6 +382,8 @@ func (s *State) cmdOutput(args []string, once bool) {
 	s.Out = f
 	if once {
 		s.onceFile = f
+	} else {
+		s.outputFilePath = args[0]
 	}
 }
 

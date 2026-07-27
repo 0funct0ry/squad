@@ -45,9 +45,19 @@ func RunREPL(s *State) error {
 		return err
 	}
 	defer rl.Close()
+	defer func() {
+		if s.RestManager != nil {
+			_ = s.RestManager.Stop("cli exit")
+		}
+	}()
 
 	var buf strings.Builder
 	for {
+		if s.pendingDefault != "" {
+			rl.SetDefault(s.pendingDefault)
+			s.pendingDefault = ""
+		}
+
 		rl.SetPrompt(RenderPrompt(s, s.Prompt))
 		if buf.Len() > 0 {
 			rl.SetPrompt(RenderPrompt(s, s.ContinuationPrompt))

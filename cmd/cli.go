@@ -15,6 +15,7 @@ type cliConfig struct {
 	Write          bool
 	ReadOnlyPragma bool
 	LogLevel       string
+	restFlags
 }
 
 var cliCfg cliConfig
@@ -54,7 +55,7 @@ var cliCmd = &cobra.Command{
 		defer database.Close()
 
 		interactive := inlineSQL == "" && cli.IsStdinTerminal()
-		state := cli.NewState(database, resolvedPath, cliCfg.Write, interactive)
+		state := cli.NewState(database, resolvedPath, cliCfg.Write, interactive, readOnly, cliCfg.RestPort, cliCfg.RestBindAddr)
 
 		if err := cli.Run(state, inlineSQL); err != nil {
 			fmt.Printf("Error: %v\n", err)
@@ -68,4 +69,5 @@ func init() {
 	cliCmd.Flags().BoolVarP(&cliCfg.Write, "write", "w", false, "Enable mutations (DDL, DML, write operations)")
 	cliCmd.Flags().BoolVarP(&cliCfg.ReadOnlyPragma, "read-only-pragma", "R", true, "Open SQLite with mode=ro when not --write")
 	cliCmd.Flags().StringVarP(&cliCfg.LogLevel, "log-level", "l", "info", "Log level (debug/info/warn/error)")
+	registerRestFlags(cliCmd.Flags(), &cliCfg.restFlags)
 }

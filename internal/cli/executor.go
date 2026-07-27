@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/0funct0ry/squad/internal/db"
 	"github.com/fatih/color"
@@ -84,21 +85,30 @@ func (s *State) Execute(statement string) {
 	}
 
 	if class == db.ClassWrite {
+		start := time.Now()
 		res, err := s.DB.Exec(rendered)
+		elapsed := time.Since(start)
 		if err != nil {
 			s.shellError(err)
 			return
 		}
-		if isSchemaChangingStatement(rendered) {
+		schemaChanged := isSchemaChangingStatement(rendered)
+		if schemaChanged {
 			s.invalidateSchemaCache()
 		}
-		if affected, err := res.RowsAffected(); err == nil && s.Interactive {
+		// LastColumns/LastRows are deliberately left untouched by writes:
+		// .grep always greps the last SELECT result, not the last statement.
+		affected, _ := res.RowsAffected()
+		if affected > 0 && s.Interactive {
 			fmt.Fprintf(s.Out, "changes: %d\n", affected)
 		}
+		s.printTimerStats(elapsed, affected, schemaChanged)
 		return
 	}
 
+	start := time.Now()
 	rows, err := s.DB.Query(rendered)
+	elapsed := time.Since(start)
 	if err != nil {
 		s.shellError(err)
 		return
@@ -110,8 +120,22 @@ func (s *State) Execute(statement string) {
 		s.shellError(err)
 		return
 	}
+	s.LastColumns = cols
+	s.LastRows = resultRows
 	if err := s.Render(cols, resultRows); err != nil {
 		s.shellError(err)
+	}
+	s.printTimerStats(elapsed, int64(len(resultRows)), false)
+}
+
+// printTimerStats prints the ".timer"/".stats" lines after a statement, if
+// either toggle is on. Independent toggles: both may print, timer first.
+func (s *State) printTimerStats(elapsed time.Duration, rows int64, schemaChanged bool) {
+	if s.TimerOn {
+		fmt.Fprintf(s.Out, "Run Time: real %.3f ms\n", float64(elapsed.Microseconds())/1000.0)
+	}
+	if s.StatsOn {
+		fmt.Fprintf(s.Out, "rows: %d  duration: %.3fms  schema-changing: %v\n", rows, float64(elapsed.Microseconds())/1000.0, schemaChanged)
 	}
 }
 

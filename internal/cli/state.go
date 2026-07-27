@@ -8,6 +8,8 @@ import (
 	"database/sql"
 	"io"
 	"os"
+
+	"github.com/0funct0ry/squad/internal/restserver"
 )
 
 // OutputMode names one of the .mode render formats.
@@ -43,9 +45,10 @@ func IsValidMode(m string) bool {
 // cache. It is shared by the REPL loop, the non-interactive paths, and the
 // dot-command dispatcher (all funnel through Execute in executor.go).
 type State struct {
-	DB    *sql.DB
-	Path  string
-	Write bool
+	DB       *sql.DB
+	Path     string
+	Write    bool
+	ReadOnly bool // the resolved readOnly bool cmd/cli.go computed at startup; reused verbatim by .open
 
 	Interactive bool
 	Colorized   bool // stdout is a TTY; suppress color when piped
@@ -63,8 +66,9 @@ type State struct {
 
 	// Out is where query results/dot-command output are written. Defaults to
 	// os.Stdout; redirected by .output/.once.
-	Out      io.Writer
-	onceFile *os.File // closed after the next statement if set via .once
+	Out            io.Writer
+	onceFile       *os.File // closed after the next statement if set via .once
+	outputFilePath string   // path passed to the active persistent .output redirect; "" = stdout, set/cleared by cmdOutput
 
 	// schema completion cache, invalidated after DDL (see executor.go)
 	tablesCache  []string
@@ -77,10 +81,38 @@ type State struct {
 	// non-interactive inline-SQL/stdin/.read paths.
 	History []string
 
+	// pendingDefault is set by ".edit" with the edited text; RunREPL consumes
+	// it once, prefilling the next Readline() call via rl.SetDefault, then
+	// clears it. Only meaningful in the interactive REPL.
+	pendingDefault string
+
+	// LastColumns/LastRows retain the most recent SELECT-shaped result set
+	// for ".grep" to filter/re-render without re-querying the DB. A write
+	// statement deliberately does NOT clear these (see executor.go).
+	LastColumns []string
+	LastRows    [][]any
+
+	// REST control (".rest"/".listener"/".token") -- lazily constructed on
+	// first use; RestPort/RestBindAddr come from cmd/cli.go's --rest-port/
+	// --rest-bind-addr flags (shared with `squad serve`/`squad sandbox`).
+	RestManager  *restserver.Manager
+	RestConfigs  *restserver.ConfigStore
+	RestPort     int
+	RestBindAddr string
+	Token        string
+
+	// Session ergonomics toggles.
+	TimerOn bool
+	StatsOn bool
+
+	// Bookmarks is lazily loaded from ~/.squad_bookmarks on first
+	// .bookmark/.bookmarks use (see bookmarks.go).
+	Bookmarks map[string]bookmarkProfile
+
 	Quit bool
 }
 
-func NewState(database *sql.DB, path string, write bool, interactive bool) *State {
+func NewState(database *sql.DB, path string, write, interactive, readOnly bool, restPort int, restBindAddr string) *State {
 	mode := ModeList
 	headers := false
 	if interactive {
@@ -91,6 +123,7 @@ func NewState(database *sql.DB, path string, write bool, interactive bool) *Stat
 		DB:                 database,
 		Path:               path,
 		Write:              write,
+		ReadOnly:           readOnly,
 		Interactive:        interactive,
 		Mode:               mode,
 		Headers:            headers,
@@ -98,6 +131,8 @@ func NewState(database *sql.DB, path string, write bool, interactive bool) *Stat
 		Prompt:             DefaultPrompt,
 		ContinuationPrompt: DefaultContinuationPrompt,
 		Out:                os.Stdout,
+		RestPort:           restPort,
+		RestBindAddr:       restBindAddr,
 	}
 }
 

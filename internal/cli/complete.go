@@ -77,8 +77,16 @@ func (c *completer) completeDot(text string) ([][]rune, int) {
 	switch cmd {
 	case ".mode":
 		return toCandidates(word, modeNames())
-	case ".schema", ".indexes", ".import":
+	case ".schema", ".indexes", ".import", ".rest", ".clone", ".diff", ".constraints", ".seed", ".backup", ".grep":
 		return toCandidates(word, c.state.cachedTables())
+	case ".stat":
+		return toCandidates(word, []string{"db"})
+	case ".listener":
+		return toCandidates(word, []string{"start", "stop"})
+	case ".timer", ".stats", ".headers":
+		return toCandidates(word, []string{"on", "off"})
+	case ".bookmark":
+		return toCandidates(word, []string{"save", "load"})
 	default:
 		return nil, 0
 	}
