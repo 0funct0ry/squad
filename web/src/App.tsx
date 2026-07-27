@@ -1863,7 +1863,7 @@ export default function App() {
       <header className="flex items-center justify-between px-4 h-12 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shrink-0">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
-            <div className="w-6 h-6 rounded bg-gradient-to-br from-indigo-500 to-sky-500 flex items-center justify-center text-white font-bold text-sm">s</div>
+            <img src="/favicon.svg" alt="squad" className="w-6 h-6 rounded" />
             <span className="font-semibold tracking-tight text-slate-900 dark:text-white">squad</span>
           </div>
           <span

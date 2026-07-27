@@ -1,0 +1,23 @@
+---
+import BaseHead from '../components/BaseHead.astro';
+import '../styles/global.css';
+
+interface Props {
+  title: string;
+  description: string;
+}
+const { title, description } = Astro.props;
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <BaseHead title={title} description={description} />
+  </head>
+  <body class="bg-bg-base text-fg-primary font-sans antialiased">
+    <slot />
+    <script>
+      import { initTheme } from '../scripts/theme';
+      initTheme();
+    </script>
+  </body>
+</html>

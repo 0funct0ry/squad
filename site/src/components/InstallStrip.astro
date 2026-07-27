@@ -1,0 +1,29 @@
+---
+const cmd = 'go install github.com/0funct0ry/squad@latest';
+---
+<section class="py-10 border-y border-border-subtle bg-bg-raised/40">
+  <div class="container-page flex flex-col md:flex-row items-center justify-between gap-4">
+    <p class="text-sm text-fg-muted">Install with Go — no packaged binaries yet.</p>
+    <div class="flex items-center gap-2 rounded-lg border border-border-subtle bg-bg-base px-4 py-2.5 font-mono text-sm text-fg-primary w-full md:w-auto">
+      <span class="text-accent">$</span>
+      <span id="install-cmd" class="flex-1">{cmd}</span>
+      <button id="copy-install" type="button" aria-label="Copy install command" class="text-fg-muted hover:text-accent transition-colors text-xs font-sans font-semibold px-2 py-1 rounded border border-border-subtle">
+        Copy
+      </button>
+    </div>
+  </div>
+</section>
+
+<script define:vars={{ cmd }}>
+  const btn = document.getElementById('copy-install');
+  btn?.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(cmd);
+      const original = btn.textContent;
+      btn.textContent = 'Copied';
+      setTimeout(() => (btn.textContent = original), 1500);
+    } catch (e) {
+      // clipboard API unavailable; no-op
+    }
+  });
+</script>

@@ -1,0 +1,50 @@
+---
+import { Github, ArrowRight } from 'lucide-astro';
+const base = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_URL : import.meta.env.BASE_URL + '/';
+---
+<section class="relative pt-40 pb-24 md:pt-48 md:pb-32 overflow-hidden">
+  <div class="container-page">
+    <div class="max-w-3xl">
+      <h1 class="font-sans font-bold text-fg-primary leading-[1.02] tracking-[-0.02em] text-[clamp(2.5rem,6vw,4.5rem)]">
+        A SQLite client that's just one binary.
+      </h1>
+      <p class="mt-6 text-lg md:text-xl text-fg-muted leading-relaxed max-w-2xl">
+        Point squad at a `.sqlite` file and get a full web UI for browsing, querying,
+        editing, and exporting — read-only by default, with no runtime and no
+        dependencies to install.
+      </p>
+      <div class="mt-9 flex flex-wrap items-center gap-4">
+        <a href={`${base}docs/`} class="btn-primary">
+          Get started <ArrowRight size={16} />
+        </a>
+        <a href="https://github.com/0funct0ry/squad" target="_blank" rel="noreferrer" class="btn-secondary">
+          <Github size={16} /> View on GitHub
+        </a>
+      </div>
+    </div>
+
+    <div class="mt-16 rounded-xl border border-border-subtle bg-bg-raised overflow-hidden shadow-2xl">
+      <div class="flex items-center gap-2 px-4 py-3 border-b border-border-subtle">
+        <span class="h-3 w-3 rounded-full bg-[#5a5a60]"></span>
+        <span class="h-3 w-3 rounded-full bg-[#5a5a60]"></span>
+        <span class="h-3 w-3 rounded-full bg-[#5a5a60]"></span>
+        <span class="ml-3 text-xs font-mono text-fg-muted">terminal</span>
+      </div>
+      <div class="p-6 font-mono text-sm leading-relaxed text-fg-primary bg-bg-base/40">
+        <p><span class="text-accent">$</span> squad mydb.sqlite</p>
+        <p class="text-fg-muted">squad v1.0.0</p>
+        <p class="text-fg-muted">&nbsp;&nbsp;database : ./mydb.sqlite&nbsp; (read-only)</p>
+        <p class="text-fg-muted">&nbsp;&nbsp;address&nbsp; : http://127.0.0.1:7071</p>
+        <p class="text-fg-muted">&nbsp;&nbsp;press Ctrl+C to stop</p>
+      </div>
+      <div class="border-t border-border-subtle">
+        <img
+          src={`${base}screenshots/data-grid.png`}
+          alt="squad web UI showing a table's rows in the data grid"
+          class="w-full block"
+          loading="eager"
+        />
+      </div>
+    </div>
+  </div>
+</section>

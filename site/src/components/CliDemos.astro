@@ -1,0 +1,56 @@
+---
+import { Terminal } from 'lucide-astro';
+const base = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_URL : import.meta.env.BASE_URL + '/';
+const demos = [
+  {
+    src: 'cli-basics.gif',
+    title: 'Browsing & querying',
+    description: '`.tables`, `.schema`, a `SELECT`, and switching `.mode` to markdown.',
+  },
+  {
+    src: 'cli-dotcommands.gif',
+    title: 'Power-user dot-commands',
+    description: '`.timer`, `.explain`, `.grep` on the last result set, and `.constraints`.',
+  },
+  {
+    src: 'cli-templates.gif',
+    title: 'Templated fake data',
+    description: '`.echo` with `{{ }}` template functions, `.seed`, and `.repeat`.',
+  },
+];
+---
+<section class="py-24 md:py-32">
+  <div class="container-page">
+    <div class="flex items-center gap-3">
+      <Terminal size={22} class="text-accent" />
+      <h2 class="text-3xl md:text-4xl font-bold tracking-tight text-fg-primary">
+        squad cli, in the terminal
+      </h2>
+    </div>
+    <p class="mt-4 text-fg-muted max-w-2xl">
+      A readline-based REPL for a SQLite database, with no HTTP server involved
+      — 30+ dot-commands, and <code class="font-mono text-fg-primary">{'{{ }}'}</code>
+      template functions for generating fake data inline.
+    </p>
+    <div class="mt-14 grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {demos.map((d) => (
+        <figure class="rounded-xl border border-border-subtle bg-bg-base overflow-hidden">
+          <div class="flex items-center gap-1.5 px-3 py-2 border-b border-border-subtle">
+            <span class="h-2.5 w-2.5 rounded-full bg-[#5a5a60]"></span>
+            <span class="h-2.5 w-2.5 rounded-full bg-[#5a5a60]"></span>
+            <span class="h-2.5 w-2.5 rounded-full bg-[#5a5a60]"></span>
+            <span class="ml-2 text-xs font-mono text-fg-muted">squad cli</span>
+          </div>
+          <img src={`${base}casts/${d.src}`} alt={`Terminal recording: ${d.title}`} class="w-full block" loading="lazy" />
+          <figcaption class="px-4 py-3">
+            <div class="text-sm font-semibold text-fg-primary">{d.title}</div>
+            <div class="mt-1 text-xs text-fg-muted" set:html={d.description.replace(/`([^`]+)`/g, '<code class="font-mono text-fg-primary">$1</code>')} />
+          </figcaption>
+        </figure>
+      ))}
+    </div>
+    <a href={`${base}docs/cli-reference/cli/`} class="mt-8 inline-block text-sm font-semibold text-accent hover:text-accent-hover transition-colors">
+      Read the squad cli docs &rarr;
+    </a>
+  </div>
+</section>

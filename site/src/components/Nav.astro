@@ -1,0 +1,59 @@
+---
+import { Github, Sun, Moon, Monitor } from 'lucide-astro';
+const base = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_URL : import.meta.env.BASE_URL + '/';
+---
+<header id="site-nav" class="fixed top-0 inset-x-0 z-50 transition-colors duration-200 border-b border-transparent">
+  <div class="container-page flex items-center justify-between h-16">
+    <a href={base} class="flex items-center gap-2 font-bold text-lg tracking-tight text-fg-primary">
+      <span class="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border-subtle">
+        <svg viewBox="0 0 32 32" class="h-4 w-4" fill="none">
+          <path d="M9 12c0-1.657 1.79-3 4-3h6c2.21 0 4 1.343 4 3s-1.79 3-4 3h-6c-2.21 0-4 1.343-4 3s1.79 3 4 3h6c2.21 0 4-1.343 4-3" stroke="#22d3ee" stroke-width="2.6" stroke-linecap="round"/>
+        </svg>
+      </span>
+      squad
+    </a>
+    <nav class="hidden md:flex items-center gap-8 text-sm font-medium text-fg-muted">
+      <a href={`${base}docs/`} class="hover:text-fg-primary transition-colors">Docs</a>
+      <a href="https://github.com/0funct0ry/squad" class="hover:text-fg-primary transition-colors flex items-center gap-1.5" target="_blank" rel="noreferrer">
+        <Github size={16} /> GitHub
+      </a>
+    </nav>
+    <div class="flex items-center gap-3">
+      <button id="theme-toggle" type="button" aria-label="Toggle theme" class="inline-flex h-9 w-9 items-center justify-center rounded-md border border-border-subtle text-fg-muted hover:text-fg-primary hover:border-accent transition-colors">
+        <Sun size={16} class="theme-icon-light" />
+        <Moon size={16} class="theme-icon-dark hidden" />
+        <Monitor size={16} class="theme-icon-system hidden" />
+      </button>
+      <a href={`${base}docs/`} class="btn-primary text-sm">Get started</a>
+    </div>
+  </div>
+</header>
+
+<script>
+  const nav = document.getElementById('site-nav');
+  const onScroll = () => {
+    if (!nav) return;
+    if (window.scrollY > 8) {
+      nav.classList.add('bg-bg-base/80', 'backdrop-blur', 'border-border-subtle');
+    } else {
+      nav.classList.remove('bg-bg-base/80', 'backdrop-blur', 'border-border-subtle');
+    }
+  };
+  window.addEventListener('scroll', onScroll, { passive: true });
+  onScroll();
+
+  import('../scripts/theme').then(({ getStoredChoice, cycleTheme }) => {
+    const btn = document.getElementById('theme-toggle');
+    const update = () => {
+      const choice = getStoredChoice();
+      btn?.querySelector('.theme-icon-light')?.classList.toggle('hidden', choice !== 'light');
+      btn?.querySelector('.theme-icon-dark')?.classList.toggle('hidden', choice !== 'dark');
+      btn?.querySelector('.theme-icon-system')?.classList.toggle('hidden', choice !== 'system');
+    };
+    update();
+    btn?.addEventListener('click', () => {
+      cycleTheme();
+      update();
+    });
+  });
+</script>

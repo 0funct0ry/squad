@@ -1,0 +1,54 @@
+---
+import { Package, ShieldCheck, Terminal, Download, TableProperties, Webhook } from 'lucide-astro';
+
+const features = [
+  {
+    icon: Package,
+    title: 'Single binary, zero install',
+    desc: 'One statically linked binary with the web UI embedded — no runtime, no Docker, no dependencies.',
+  },
+  {
+    icon: ShieldCheck,
+    title: 'Read-only by default',
+    desc: 'Binds to 127.0.0.1 and opens your database read-only unless you explicitly pass --write.',
+  },
+  {
+    icon: Terminal,
+    title: 'A real SQL editor',
+    desc: 'Browse the schema and run arbitrary SQL against your database, with results streamed straight back.',
+  },
+  {
+    icon: Download,
+    title: 'CSV, JSON & SQL export',
+    desc: 'Export query results or whole tables to CSV, JSON, or SQL without leaving the browser.',
+  },
+  {
+    icon: TableProperties,
+    title: 'Table editor & fake-data seeding',
+    desc: 'In write mode, create and edit tables visually and generate realistic fake rows to seed them.',
+  },
+  {
+    icon: Webhook,
+    title: 'Opt-in auto-REST',
+    desc: 'Pass --rest to unlock instant per-table REST endpoints on a separate listener, kept off by default.',
+  },
+];
+---
+<section class="py-24 md:py-32">
+  <div class="container-page">
+    <h2 class="text-3xl md:text-4xl font-bold tracking-tight text-fg-primary max-w-xl">
+      Everything you need, nothing you have to configure.
+    </h2>
+    <div class="mt-14 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      {features.map(({ icon: Icon, title, desc }) => (
+        <div class="rounded-xl border border-border-subtle bg-bg-raised p-6">
+          <div class="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-border-subtle text-accent">
+            <Icon size={20} />
+          </div>
+          <h3 class="mt-4 font-semibold text-fg-primary">{title}</h3>
+          <p class="mt-2 text-sm text-fg-muted leading-relaxed">{desc}</p>
+        </div>
+      ))}
+    </div>
+  </div>
+</section>

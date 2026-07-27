@@ -1,0 +1,32 @@
+---
+const base = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_URL : import.meta.env.BASE_URL + '/';
+const shots = [
+  { src: 'sql-editor.png', alt: 'squad SQL editor running a query against a SQLite database', caption: 'A real SQL editor' },
+  { src: 'data-grid.png', alt: 'squad data grid browsing table rows', caption: 'Browse tables & schema' },
+  { src: 'seed-generator.png', alt: 'squad seed data generator producing fake rows', caption: 'Fake-data seeding' },
+];
+---
+<section class="py-24 md:py-32 bg-bg-raised/30 border-y border-border-subtle">
+  <div class="container-page">
+    <h2 class="text-3xl md:text-4xl font-bold tracking-tight text-fg-primary max-w-xl">
+      How it works
+    </h2>
+    <p class="mt-4 text-fg-muted max-w-2xl">
+      The same web UI, whether you're exploring a table, writing SQL by hand, or
+      generating fake rows to fill an empty schema.
+    </p>
+    <div class="mt-14 grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {shots.map((s) => (
+        <figure class="rounded-xl border border-border-subtle bg-bg-base overflow-hidden">
+          <div class="flex items-center gap-1.5 px-3 py-2 border-b border-border-subtle">
+            <span class="h-2.5 w-2.5 rounded-full bg-[#5a5a60]"></span>
+            <span class="h-2.5 w-2.5 rounded-full bg-[#5a5a60]"></span>
+            <span class="h-2.5 w-2.5 rounded-full bg-[#5a5a60]"></span>
+          </div>
+          <img src={`${base}screenshots/${s.src}`} alt={s.alt} class="w-full block" loading="lazy" />
+          <figcaption class="px-4 py-3 text-sm font-medium text-fg-muted">{s.caption}</figcaption>
+        </figure>
+      ))}
+    </div>
+  </div>
+</section>

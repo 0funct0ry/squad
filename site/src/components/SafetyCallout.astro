@@ -1,0 +1,31 @@
+---
+import { ShieldCheck } from 'lucide-astro';
+const base = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_URL : import.meta.env.BASE_URL + '/';
+---
+<section class="py-24 md:py-32">
+  <div class="container-page">
+    <div class="rounded-2xl border border-border-subtle bg-bg-raised p-8 md:p-12 flex flex-col md:flex-row gap-8 items-start">
+      <div class="inline-flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-xl border border-border-subtle text-accent">
+        <ShieldCheck size={24} />
+      </div>
+      <div>
+        <h2 class="text-2xl md:text-3xl font-bold tracking-tight text-fg-primary">
+          Safe by default, powerful when you opt in
+        </h2>
+        <p class="mt-4 text-fg-muted leading-relaxed max-w-2xl">
+          squad binds to <code class="font-mono text-fg-primary">127.0.0.1</code> and opens
+          every database read-only unless you pass <code class="font-mono text-fg-primary">--write</code>.
+          In read-only mode, a statement classifier rejects any mutating SQL before it
+          reaches the database. Auto-REST endpoints stay disabled until you pass
+          <code class="font-mono text-fg-primary">--rest</code>, and REST writes additionally
+          require <code class="font-mono text-fg-primary">--write</code>. Binding beyond
+          loopback is an explicit opt-in that prints a warning recommending
+          <code class="font-mono text-fg-primary">--token</code>.
+        </p>
+        <a href={`${base}docs/security-model/`} class="mt-6 inline-block text-sm font-semibold text-accent hover:text-accent-hover transition-colors">
+          Read the security model &rarr;
+        </a>
+      </div>
+    </div>
+  </div>
+</section>

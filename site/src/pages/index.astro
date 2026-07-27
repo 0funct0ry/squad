@@ -1,0 +1,26 @@
+---
+import Layout from '../layouts/Layout.astro';
+import Nav from '../components/Nav.astro';
+import Hero from '../components/Hero.astro';
+import InstallStrip from '../components/InstallStrip.astro';
+import FeatureGrid from '../components/FeatureGrid.astro';
+import Screenshots from '../components/Screenshots.astro';
+import CliDemos from '../components/CliDemos.astro';
+import SafetyCallout from '../components/SafetyCallout.astro';
+import Footer from '../components/Footer.astro';
+---
+<Layout
+  title="squad — a single-binary, web-based SQLite client"
+  description="Point squad at a SQLite file and get a full web UI for browsing, querying, editing, and exporting — read-only by default, zero install."
+>
+  <Nav />
+  <main>
+    <Hero />
+    <InstallStrip />
+    <FeatureGrid />
+    <Screenshots />
+    <CliDemos />
+    <SafetyCallout />
+  </main>
+  <Footer />
+</Layout>
