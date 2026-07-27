@@ -12,7 +12,7 @@ func newSandboxTestServer(t *testing.T, restEnabled bool) (*Server, *db.Registry
 	t.Helper()
 	registry := db.NewRegistry(t.TempDir(), 512*1024*1024)
 	t.Cleanup(registry.CloseAll)
-	srv := NewSandboxServer(registry, false, restEnabled, "127.0.0.1", 0)
+	srv := NewSandboxServer(registry, false, restEnabled, "127.0.0.1", 0, "info")
 	return srv, registry
 }
 

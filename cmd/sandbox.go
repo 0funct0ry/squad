@@ -104,7 +104,7 @@ func runSandbox(cmd *cobra.Command, args []string) {
 	fmt.Printf("squad %s (sandbox mode)\n", Version)
 	fmt.Printf("  sandbox dir : %s\n", absDir)
 
-	srv := server.NewSandboxServer(registry, sandboxCfg.Examples, sandboxCfg.Rest, sandboxCfg.RestBindAddr, sandboxCfg.RestPort)
+	srv := server.NewSandboxServer(registry, sandboxCfg.Examples, sandboxCfg.Rest, sandboxCfg.RestBindAddr, sandboxCfg.RestPort, sandboxCfg.LogLevel)
 	addr := fmt.Sprintf("%s:%d", sandboxCfg.Addr, sandboxCfg.Port)
 	fmt.Printf("  address     : http://%s\n", addr)
 	if sandboxCfg.Rest {

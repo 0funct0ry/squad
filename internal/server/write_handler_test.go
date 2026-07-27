@@ -47,7 +47,7 @@ func TestWriteGateReadOnly(t *testing.T) {
 	}
 
 	// Create server in read-only mode (write=false)
-	srv := NewServer(database, dbPath, false, false, false, "127.0.0.1", 7072)
+	srv := NewServer(database, dbPath, false, false, false, "127.0.0.1", 7072, "info")
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -121,7 +121,7 @@ func TestPostDDLHandler(t *testing.T) {
 	}
 	defer database.Close()
 
-	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072) // write=true
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072, "info") // write=true
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -186,7 +186,7 @@ func TestCreateTableHandler(t *testing.T) {
 	}
 	defer database.Close()
 
-	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072, "info")
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -260,7 +260,7 @@ func TestAlterTableHandler(t *testing.T) {
 		t.Fatalf("seed failed: %v", err)
 	}
 
-	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072, "info")
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -377,7 +377,7 @@ func TestFKDropColumnReject(t *testing.T) {
 		t.Fatalf("seed failed: %v", err)
 	}
 
-	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072, "info")
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -417,7 +417,7 @@ func TestDeleteTableHandler(t *testing.T) {
 		t.Fatalf("seed failed: %v", err)
 	}
 
-	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072, "info")
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -457,7 +457,7 @@ func TestRowCRUDHandlers(t *testing.T) {
 		t.Fatalf("seed failed: %v", err)
 	}
 
-	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072, "info")
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -576,7 +576,7 @@ func TestCreateTableWithForeignKeys(t *testing.T) {
 		t.Fatalf("seed failed: %v", err)
 	}
 
-	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072, "info")
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -708,7 +708,7 @@ func TestCreateTableForeignKeyValidation(t *testing.T) {
 		t.Fatalf("view seed failed: %v", err)
 	}
 
-	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072, "info")
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -804,7 +804,7 @@ func TestAlterTableAddForeignKey(t *testing.T) {
 		t.Fatalf("seed failed: %v", err)
 	}
 
-	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072, "info")
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -877,7 +877,7 @@ func TestAlterTableAddForeignKeyViolation(t *testing.T) {
 		t.Fatalf("seed failed: %v", err)
 	}
 
-	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072, "info")
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -955,7 +955,7 @@ func TestAlterTableDropForeignKey(t *testing.T) {
 		t.Fatalf("seed failed: %v", err)
 	}
 
-	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072, "info")
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -1041,7 +1041,7 @@ func TestForeignKeyOpsReadOnlyAndNotFound(t *testing.T) {
 	}
 
 	// Read-only server (write=false)
-	srv := NewServer(database, dbPath, false, false, false, "127.0.0.1", 7072)
+	srv := NewServer(database, dbPath, false, false, false, "127.0.0.1", 7072, "info")
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	client := ts.Client()
@@ -1079,7 +1079,7 @@ func TestForeignKeyOpsReadOnlyAndNotFound(t *testing.T) {
 	resp.Body.Close()
 
 	// 404 for nonexistent table (write-mode server)
-	srvWrite := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072)
+	srvWrite := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072, "info")
 	tsWrite := httptest.NewServer(srvWrite.Handler())
 	defer tsWrite.Close()
 	clientWrite := tsWrite.Client()

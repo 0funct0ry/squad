@@ -26,7 +26,7 @@ func newRestTestServer(t *testing.T, write, restEnabled bool) *Server {
 
 	// Port 0: these tests never actually start the listener against a real
 	// port except where the test explicitly calls /api/rest/start.
-	return NewServer(database, ":memory:", write, false, restEnabled, "127.0.0.1", 0)
+	return NewServer(database, ":memory:", write, false, restEnabled, "127.0.0.1", 0, "info")
 }
 
 type okEnvelope struct {

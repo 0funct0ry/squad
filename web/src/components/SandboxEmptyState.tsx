@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { Database, Moon, Sun, Upload, Plus } from 'lucide-react';
+import { Database, Moon, Sun, Monitor, Upload, Plus } from 'lucide-react';
 
 interface SandboxDbEntry {
   id: string;
@@ -15,7 +15,8 @@ interface SandboxEmptyStateProps {
   onCreate: (name: string) => Promise<boolean>;
   onSelect: (id: string) => void;
   onError: (message: string) => void;
-  theme: 'light' | 'dark';
+  theme: 'light' | 'dark' | 'system';
+  resolvedDark: boolean;
   toggleTheme: () => void;
 }
 
@@ -33,6 +34,7 @@ export default function SandboxEmptyState({
   onSelect,
   onError,
   theme,
+  resolvedDark,
   toggleTheme,
 }: SandboxEmptyStateProps) {
   const [dragOver, setDragOver] = useState(false);
@@ -82,9 +84,11 @@ export default function SandboxEmptyState({
         <button
           onClick={toggleTheme}
           className="w-8 h-8 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center transition-colors"
-          title="Toggle theme"
+          title={`Theme: ${theme}`}
         >
-          {theme === 'light' ? (
+          {theme === 'system' ? (
+            <Monitor className="w-4 h-4 text-slate-500" />
+          ) : resolvedDark ? (
             <Moon className="w-4 h-4 text-slate-500" />
           ) : (
             <Sun className="w-4 h-4 text-amber-400" />

@@ -1,13 +1,18 @@
 package server
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/0funct0ry/squad/internal/db"
 	"github.com/0funct0ry/squad/internal/restserver"
@@ -22,9 +27,80 @@ type Server struct {
 	write    bool
 	examples bool
 	registry *db.Registry // non-nil in sandbox mode; nil for the single-DB flow
+	logger   *slog.Logger
 
 	restManager *restserver.Manager
 	restConfigs *restserver.ConfigStore
+}
+
+// parseLogLevel maps the --log-level flag value to an slog.Level, defaulting
+// to info on empty/unrecognized input.
+func parseLogLevel(level string) slog.Level {
+	switch strings.ToLower(level) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}
+
+// errBodyWriter buffers the response body only for error (>=400) responses,
+// so it can be parsed for the envelope's error code/message without
+// buffering every response body.
+type errBodyWriter struct {
+	gin.ResponseWriter
+	buf bytes.Buffer
+}
+
+func (w *errBodyWriter) Write(b []byte) (int, error) {
+	if w.Status() >= http.StatusBadRequest {
+		w.buf.Write(b)
+	}
+	return w.ResponseWriter.Write(b)
+}
+
+// loggingMiddleware logs one info-level line per request (method, path,
+// status, duration) and an additional error-level line, with the envelope's
+// code/message, whenever the response was an error (status >= 400).
+func loggingMiddleware(logger *slog.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		ebw := &errBodyWriter{ResponseWriter: c.Writer}
+		c.Writer = ebw
+
+		c.Next()
+
+		duration := time.Since(start)
+		status := c.Writer.Status()
+		logger.Info("request",
+			"method", c.Request.Method,
+			"path", c.Request.URL.Path,
+			"status", status,
+			"duration_ms", duration.Milliseconds(),
+		)
+
+		if status >= http.StatusBadRequest && ebw.buf.Len() > 0 {
+			var envelope struct {
+				Error struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(ebw.buf.Bytes(), &envelope); err == nil {
+				logger.Error("request failed",
+					"method", c.Request.Method,
+					"path", c.Request.URL.Path,
+					"status", status,
+					"code", envelope.Error.Code,
+					"message", envelope.Error.Message,
+				)
+			}
+		}
+	}
 }
 
 // singleDBProvider implements restserver.DBProvider for the fixed single-DB
@@ -57,9 +133,11 @@ func (p *sandboxDBProvider) CurrentDB() (*sql.DB, string, string, error) {
 	return entry.DB, entry.ID, entry.DisplayName, nil
 }
 
-func NewServer(database *sql.DB, dbPath string, write bool, examplesEnabled bool, restEnabled bool, restBindAddr string, restPort int) *Server {
+func NewServer(database *sql.DB, dbPath string, write bool, examplesEnabled bool, restEnabled bool, restBindAddr string, restPort int, logLevel string) *Server {
 	// Disable debug logs by default to keep output clean, unless needed
 	gin.SetMode(gin.ReleaseMode)
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: parseLogLevel(logLevel)}))
 
 	s := &Server{
 		router:   gin.New(), // Use gin.New() and custom recovery/logger to control logging
@@ -67,20 +145,24 @@ func NewServer(database *sql.DB, dbPath string, write bool, examplesEnabled bool
 		dbPath:   dbPath,
 		write:    write,
 		examples: examplesEnabled,
+		logger:   logger,
 	}
 
 	s.restConfigs = restserver.NewConfigStore()
 	s.restManager = restserver.NewManager(restEnabled, write, restBindAddr, restPort, &singleDBProvider{db: database, dbPath: dbPath}, s.restConfigs)
 
 	s.router.Use(gin.Recovery())
+	s.router.Use(loggingMiddleware(logger))
 	s.setupRoutes()
 	return s
 }
 
 // NewSandboxServer starts a Server with no fixed database — every request is
 // routed through the registry to a per-database connection instead.
-func NewSandboxServer(registry *db.Registry, examplesEnabled bool, restEnabled bool, restBindAddr string, restPort int) *Server {
+func NewSandboxServer(registry *db.Registry, examplesEnabled bool, restEnabled bool, restBindAddr string, restPort int, logLevel string) *Server {
 	gin.SetMode(gin.ReleaseMode)
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: parseLogLevel(logLevel)}))
 
 	s := &Server{
 		router: gin.New(),
@@ -91,12 +173,14 @@ func NewSandboxServer(registry *db.Registry, examplesEnabled bool, restEnabled b
 		write:    true,
 		registry: registry,
 		examples: examplesEnabled,
+		logger:   logger,
 	}
 
 	s.restConfigs = restserver.NewConfigStore()
 	s.restManager = restserver.NewManager(restEnabled, true, restBindAddr, restPort, &sandboxDBProvider{registry: registry}, s.restConfigs)
 
 	s.router.Use(gin.Recovery())
+	s.router.Use(loggingMiddleware(logger))
 	s.setupRoutes()
 	return s
 }

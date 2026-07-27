@@ -37,7 +37,7 @@ func TestMetaHandler_NormalAndEmpty(t *testing.T) {
 	defer database.Close()
 
 	// 1. Test empty schema-less database returns tableCount:0, viewCount:0
-	srv := NewServer(database, dbPath, false, false, false, "127.0.0.1", 7072)
+	srv := NewServer(database, dbPath, false, false, false, "127.0.0.1", 7072, "info")
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -103,7 +103,7 @@ func TestMetaHandler_JournalModes(t *testing.T) {
 	}
 	defer dbDel.Close()
 
-	srvDel := NewServer(dbDel, dbPathDel, false, false, false, "127.0.0.1", 7072)
+	srvDel := NewServer(dbDel, dbPathDel, false, false, false, "127.0.0.1", 7072, "info")
 	tsDel := httptest.NewServer(srvDel.Handler())
 	defer tsDel.Close()
 
@@ -132,7 +132,7 @@ func TestMetaHandler_JournalModes(t *testing.T) {
 		t.Fatalf("failed to set WAL: %v", err)
 	}
 
-	srvWal := NewServer(dbWal, dbPathWal, false, false, false, "127.0.0.1", 7072)
+	srvWal := NewServer(dbWal, dbPathWal, false, false, false, "127.0.0.1", 7072, "info")
 	tsWal := httptest.NewServer(srvWal.Handler())
 	defer tsWal.Close()
 
@@ -163,7 +163,7 @@ func TestMetaHandler_SizeBytesUpdates(t *testing.T) {
 	}
 	defer database.Close()
 
-	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072) // Write mode
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072, "info") // Write mode
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -227,7 +227,7 @@ func TestMetaHandler_PathAbsolute(t *testing.T) {
 
 	// In the real app, cmd/root.go resolves absolute path at open time.
 	// Let's pass the absolute path as the DB path to NewServer.
-	srv := NewServer(database, absPath, false, false, false, "127.0.0.1", 7072)
+	srv := NewServer(database, absPath, false, false, false, "127.0.0.1", 7072, "info")
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 

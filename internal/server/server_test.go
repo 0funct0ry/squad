@@ -17,7 +17,7 @@ func TestServerMeta(t *testing.T) {
 	}
 	defer database.Close()
 
-	srv := NewServer(database, ":memory:", false, false, false, "127.0.0.1", 7072)
+	srv := NewServer(database, ":memory:", false, false, false, "127.0.0.1", 7072, "info")
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 

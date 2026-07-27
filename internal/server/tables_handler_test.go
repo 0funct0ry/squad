@@ -30,7 +30,7 @@ func TestTablesHandlers(t *testing.T) {
 		t.Fatalf("failed to seed db: %v", err)
 	}
 
-	srv := NewServer(database, ":memory:", false, false, false, "127.0.0.1", 7072)
+	srv := NewServer(database, ":memory:", false, false, false, "127.0.0.1", 7072, "info")
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 

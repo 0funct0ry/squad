@@ -75,7 +75,7 @@ var rootCmd = &cobra.Command{
 		}
 
 		// Start the server
-		srv := server.NewServer(database, resolvedPath, cfg.Write, cfg.Examples, cfg.Rest, cfg.RestBindAddr, cfg.RestPort)
+		srv := server.NewServer(database, resolvedPath, cfg.Write, cfg.Examples, cfg.Rest, cfg.RestBindAddr, cfg.RestPort, cfg.LogLevel)
 		addr := fmt.Sprintf("%s:%d", cfg.Addr, cfg.Port)
 		fmt.Printf("  address  : http://%s\n", addr)
 		if cfg.Rest {

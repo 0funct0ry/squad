@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ArrowLeft, Database, Pencil, Trash2, Download, Upload, Plus, Check, X, Moon, Sun } from 'lucide-react';
+import { ArrowLeft, Database, Pencil, Trash2, Download, Upload, Plus, Check, X, Moon, Sun, Monitor } from 'lucide-react';
 import ConfirmModal from './ConfirmModal';
 import UploadDbModal from './UploadDbModal';
 
@@ -22,7 +22,8 @@ interface SandboxManagePageProps {
   onUpload: (file: File, name?: string) => Promise<boolean>;
   onCreate: (name: string) => Promise<boolean>;
   onError: (message: string) => void;
-  theme: 'light' | 'dark';
+  theme: 'light' | 'dark' | 'system';
+  resolvedDark: boolean;
   toggleTheme: () => void;
 }
 
@@ -51,6 +52,7 @@ export default function SandboxManagePage({
   onCreate,
   onError,
   theme,
+  resolvedDark,
   toggleTheme,
 }: SandboxManagePageProps) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -114,9 +116,11 @@ export default function SandboxManagePage({
         <button
           onClick={toggleTheme}
           className="w-8 h-8 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center transition-colors"
-          title="Toggle theme"
+          title={`Theme: ${theme}`}
         >
-          {theme === 'light' ? (
+          {theme === 'system' ? (
+            <Monitor className="w-4 h-4 text-slate-500" />
+          ) : resolvedDark ? (
             <Moon className="w-4 h-4 text-slate-500" />
           ) : (
             <Sun className="w-4 h-4 text-amber-400" />

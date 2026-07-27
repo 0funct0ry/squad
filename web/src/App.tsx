@@ -2,6 +2,8 @@ import { useEffect, useState, useRef } from 'react';
 import {
   Moon,
   Sun,
+  Monitor,
+  Terminal,
   Search,
   Save,
   X,
@@ -493,13 +495,19 @@ export default function App() {
   const [blobModal, setBlobModal] = useState<{ column: string; hex: string; type: BlobMediaType } | null>(null);
   const [blobModalView, setBlobModalView] = useState<'preview' | 'hex'>('preview');
   const [rowsData, setRowsData] = useState<RowsData | null>(null);
+  const [rowsLoading, setRowsLoading] = useState<boolean>(false);
+  const [tablesLoading, setTablesLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
-  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+  const [theme, setTheme] = useState<'light' | 'dark' | 'system'>(() => {
     const saved = localStorage.getItem('color-scheme');
-    if (saved === 'dark' || saved === 'light') return saved;
+    if (saved === 'dark' || saved === 'light' || saved === 'system') return saved;
     return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   });
+  const [systemPrefersDark, setSystemPrefersDark] = useState<boolean>(() =>
+    window.matchMedia('(prefers-color-scheme: dark)').matches
+  );
+  const resolvedDark = theme === 'dark' || (theme === 'system' && systemPrefersDark);
 
   const [activeTab, setActiveTab] = useState<string>('data');
   const [editorMode, setEditorMode] = useState<'create' | 'alter'>('create');
@@ -551,6 +559,13 @@ export default function App() {
   const [infoSortBy, setInfoSortBy] = useState<'name' | 'rowCount'>('name');
   const [infoSortDir, setInfoSortDir] = useState<'asc' | 'desc'>('asc');
   const [toast, setToast] = useState<{ message: string; type: 'error' | 'success' } | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showToast = (message: string, type: 'error' | 'success', duration?: number) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToast({ message, type });
+    toastTimerRef.current = setTimeout(() => setToast(null), duration ?? (type === 'error' ? 5000 : 3000));
+  };
 
   // Seed states
   const [seedPlan, setSeedPlan] = useState<SeedPlan | null>(null);
@@ -599,8 +614,7 @@ export default function App() {
       .then((res) => res.json())
       .then((body) => {
         if (body.ok && body.data?.restStopped) {
-          setToast({ message: 'REST server stopped: active database changed', type: 'error' });
-          setTimeout(() => setToast(null), 5000);
+          showToast('REST server stopped: active database changed', 'error');
         }
       })
       .catch(console.error);
@@ -670,8 +684,7 @@ export default function App() {
       if (!body.ok) throw new Error(body.error?.message || 'Rename failed');
       refreshSandboxDbs();
     } catch (err: any) {
-      setToast({ message: err.message || 'Rename failed', type: 'error' });
-      setTimeout(() => setToast(null), 5000);
+      showToast(err.message || 'Rename failed', 'error');
     }
   };
 
@@ -686,8 +699,7 @@ export default function App() {
         setActiveDbId(null);
       }
     } catch (err: any) {
-      setToast({ message: err.message || 'Delete failed', type: 'error' });
-      setTimeout(() => setToast(null), 5000);
+      showToast(err.message || 'Delete failed', 'error');
     }
   };
 
@@ -697,6 +709,7 @@ export default function App() {
 
   const fetchMetaAndTables = () => {
     setInfoLoading(true);
+    setTablesLoading(true);
     setInfoError(null);
     Promise.all([
       apiFetch('/meta').then(res => res.json()),
@@ -723,11 +736,11 @@ export default function App() {
         console.error(err);
         setInfoError(err.message || 'Failed to fetch database info');
         setError(err.message || 'Failed to fetch database info');
-        setToast({ message: err.message || 'Failed to fetch database info', type: 'error' });
-        setTimeout(() => setToast(null), 5000);
+        showToast(err.message || 'Failed to fetch database info', 'error');
       })
       .finally(() => {
         setInfoLoading(false);
+        setTablesLoading(false);
         setLoading(false);
       });
   };
@@ -739,6 +752,7 @@ export default function App() {
   const [queryError, setQueryError] = useState<{ code: string; message: string } | null>(null);
   const [queryLoading, setQueryLoading] = useState<boolean>(false);
   const editorViewRef = useRef<EditorView | null>(null);
+  const tableSearchRef = useRef<HTMLInputElement | null>(null);
 
   // Examples (--examples) state: null until we know whether the feature is
   // enabled server-side (GET /api/examples 404s when the flag is off).
@@ -765,8 +779,7 @@ export default function App() {
       if (!res.ok || !body.ok) throw new Error(body.error?.message || 'Failed to load example');
       setEditorContents(body.data.schema);
     } catch (err: any) {
-      setToast({ message: err.message || 'Failed to load example', type: 'error' });
-      setTimeout(() => setToast(null), 5000);
+      showToast(err.message || 'Failed to load example', 'error');
     }
   };
 
@@ -805,8 +818,7 @@ export default function App() {
         const message = data.rowsAffected > 0
           ? `${data.rowsAffected} row${data.rowsAffected === 1 ? '' : 's'} affected`
           : 'Schema updated';
-        setToast({ message, type: 'success' });
-        setTimeout(() => setToast(null), 3000);
+        showToast(message, 'success');
       }
     } catch (err: any) {
       let code = 'SQL_ERROR';
@@ -855,12 +867,10 @@ export default function App() {
       a.click();
       document.body.removeChild(a);
       window.URL.revokeObjectURL(url);
-      setToast({ message: 'Query exported successfully', type: 'success' });
-      setTimeout(() => setToast(null), 3000);
+      showToast('Query exported successfully', 'success');
     } catch (err: any) {
       console.error(err);
-      setToast({ message: err.message || 'Failed to export query result', type: 'error' });
-      setTimeout(() => setToast(null), 5000);
+      showToast(err.message || 'Failed to export query result', 'error');
     } finally {
       setExportQueryLoading(false);
     }
@@ -908,8 +918,7 @@ export default function App() {
       }
 
       await createTable(body);
-      setToast({ message: `Table "${newTableName}" created successfully!`, type: 'success' });
-      setTimeout(() => setToast(null), 3000);
+      showToast(`Table "${newTableName}" created successfully!`, 'success');
 
       // Reset form
       setNewTableName('');
@@ -941,14 +950,12 @@ export default function App() {
         op: 'rename_table',
         newName: newTableNameInput
       });
-      setToast({ message: `Table renamed to "${newTableNameInput}" successfully!`, type: 'success' });
-      setTimeout(() => setToast(null), 3000);
+      showToast(`Table renamed to "${newTableNameInput}" successfully!`, 'success');
       
       fetchMetaAndTables();
       setSelectedTable({ name: newTableNameInput, type: selectedTable.type, rowCount: selectedTable.rowCount });
     } catch (err: any) {
-      setToast({ message: err.message || 'Failed to rename table', type: 'error' });
-      setTimeout(() => setToast(null), 5000);
+      showToast(err.message || 'Failed to rename table', 'error');
     }
   };
 
@@ -964,8 +971,7 @@ export default function App() {
           default: addColDefault.trim() !== '' ? addColDefault.trim() : null
         }
       });
-      setToast({ message: `Column "${addColName}" added successfully!`, type: 'success' });
-      setTimeout(() => setToast(null), 3000);
+      showToast(`Column "${addColName}" added successfully!`, 'success');
       setAddColName('');
       setAddColType('TEXT');
       setAddColNotNull(false);
@@ -976,8 +982,7 @@ export default function App() {
       const body = await res.json();
       if (body.ok) setSchema(body.data);
     } catch (err: any) {
-      setToast({ message: err.message || 'Failed to add column', type: 'error' });
-      setTimeout(() => setToast(null), 5000);
+      showToast(err.message || 'Failed to add column', 'error');
     }
   };
 
@@ -991,8 +996,7 @@ export default function App() {
         from: fromCol,
         to: toCol
       });
-      setToast({ message: `Column renamed from "${fromCol}" to "${toCol}" successfully!`, type: 'success' });
-      setTimeout(() => setToast(null), 3000);
+      showToast(`Column renamed from "${fromCol}" to "${toCol}" successfully!`, 'success');
       setRenamingColumn(prev => {
         const copy = { ...prev };
         delete copy[fromCol];
@@ -1004,8 +1008,7 @@ export default function App() {
       const body = await res.json();
       if (body.ok) setSchema(body.data);
     } catch (err: any) {
-      setToast({ message: err.message || 'Failed to rename column', type: 'error' });
-      setTimeout(() => setToast(null), 5000);
+      showToast(err.message || 'Failed to rename column', 'error');
     }
   };
 
@@ -1022,19 +1025,17 @@ export default function App() {
         column: colName
       });
       if (data.warnings && data.warnings.length > 0) {
-        setToast({ message: `Dropped column. Warning: ${data.warnings.join(', ')}`, type: 'success' });
+        showToast(`Dropped column. Warning: ${data.warnings.join(', ')}`, 'success', 5000);
       } else {
-        setToast({ message: `Column "${colName}" dropped successfully!`, type: 'success' });
+        showToast(`Column "${colName}" dropped successfully!`, 'success', 5000);
       }
-      setTimeout(() => setToast(null), 5000);
-      
+
       // Reload schema
       const res = await apiFetch(`/tables/${selectedTable.name}/schema`);
       const body = await res.json();
       if (body.ok) setSchema(body.data);
     } catch (err: any) {
-      setToast({ message: err.message || 'Failed to drop column', type: 'error' });
-      setTimeout(() => setToast(null), 5000);
+      showToast(err.message || 'Failed to drop column', 'error');
     }
   };
 
@@ -1046,8 +1047,7 @@ export default function App() {
         op: 'add_foreign_key',
         foreignKey: addFk
       });
-      setToast({ message: 'Foreign key added successfully!', type: 'success' });
-      setTimeout(() => setToast(null), 3000);
+      showToast('Foreign key added successfully!', 'success');
       setAddFk(emptyFkDraft());
 
       // Reload schema
@@ -1085,8 +1085,7 @@ export default function App() {
         op: 'drop_foreign_key',
         foreignKey: { id: fk.id }
       });
-      setToast({ message: 'Foreign key dropped successfully!', type: 'success' });
-      setTimeout(() => setToast(null), 3000);
+      showToast('Foreign key dropped successfully!', 'success');
 
       const res = await apiFetch(`/tables/${selectedTable.name}/schema`);
       const body = await res.json();
@@ -1095,8 +1094,7 @@ export default function App() {
         setAllSchemas(prev => ({ ...prev, [selectedTable.name]: body.data }));
       }
     } catch (err: any) {
-      setToast({ message: err.message || 'Failed to drop foreign key', type: 'error' });
-      setTimeout(() => setToast(null), 5000);
+      showToast(err.message || 'Failed to drop foreign key', 'error');
     }
   };
 
@@ -1109,15 +1107,13 @@ export default function App() {
     if (!selectedTable || !isWrite) return;
     try {
       await dropTable(selectedTable.name);
-      setToast({ message: `Table "${selectedTable.name}" dropped successfully!`, type: 'success' });
-      setTimeout(() => setToast(null), 3000);
+      showToast(`Table "${selectedTable.name}" dropped successfully!`, 'success');
       
       fetchMetaAndTables();
       setSelectedTable(null);
       setActiveTab('info');
     } catch (err: any) {
-      setToast({ message: err.message || 'Failed to drop table', type: 'error' });
-      setTimeout(() => setToast(null), 5000);
+      showToast(err.message || 'Failed to drop table', 'error');
     }
   };
 
@@ -1235,8 +1231,7 @@ export default function App() {
     try {
       const data = await seedTable(selectedTable.name, { count: seedCount, dryRun: false, columns: buildSeedColumnsPayload() });
       const inserted = (data as { inserted: number }).inserted;
-      setToast({ message: `Inserted ${inserted} rows`, type: 'success' });
-      setTimeout(() => setToast(null), 3000);
+      showToast(`Inserted ${inserted} rows`, 'success');
       setSeedPreviewRows(null);
       setPage(1);
       setRefetchTrigger((prev) => prev + 1);
@@ -1303,8 +1298,7 @@ export default function App() {
       });
 
       await insertRow(selectedTable.name, values);
-      setToast({ message: 'Row inserted successfully', type: 'success' });
-      setTimeout(() => setToast(null), 3000);
+      showToast('Row inserted successfully', 'success');
       setInlineAddRow(null);
       
       // Reload rows
@@ -1312,8 +1306,7 @@ export default function App() {
       setRefetchTrigger(prev => prev + 1);
       fetchMetaAndTables(); // updates count in sidebar
     } catch (err: any) {
-      setToast({ message: err.message || 'Failed to insert row', type: 'error' });
-      setTimeout(() => setToast(null), 5000);
+      showToast(err.message || 'Failed to insert row', 'error');
     }
   };
 
@@ -1336,13 +1329,11 @@ export default function App() {
       });
 
       await updateRow(selectedTable.name, key, values);
-      setToast({ message: 'Row updated successfully', type: 'success' });
-      setTimeout(() => setToast(null), 3000);
+      showToast('Row updated successfully', 'success');
       setEditingRowIndex(null);
       setRefetchTrigger(prev => prev + 1);
     } catch (err: any) {
-      setToast({ message: err.message || 'Failed to update row', type: 'error' });
-      setTimeout(() => setToast(null), 5000);
+      showToast(err.message || 'Failed to update row', 'error');
     }
   };
 
@@ -1368,8 +1359,7 @@ export default function App() {
 
     try {
       await deleteRow(selectedTable.name, key);
-      setToast({ message: 'Row deleted successfully', type: 'success' });
-      setTimeout(() => setToast(null), 3000);
+      showToast('Row deleted successfully', 'success');
       setRefetchTrigger(prev => prev + 1);
       fetchMetaAndTables(); // refresh sidebar count
     } catch (err: any) {
@@ -1381,20 +1371,23 @@ export default function App() {
           total: originalTotal
         });
       }
-      setToast({ message: err.message || 'Failed to delete row', type: 'error' });
-      setTimeout(() => setToast(null), 5000);
+      showToast(err.message || 'Failed to delete row', 'error');
     }
   };
 
   useEffect(() => {
-    if (theme === 'dark') {
-      document.documentElement.classList.add('dark');
-      localStorage.setItem('color-scheme', 'dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-      localStorage.setItem('color-scheme', 'light');
-    }
+    localStorage.setItem('color-scheme', theme);
+    if (theme !== 'system') return;
+    const mql = window.matchMedia('(prefers-color-scheme: dark)');
+    setSystemPrefersDark(mql.matches);
+    const onChange = (e: MediaQueryListEvent) => setSystemPrefersDark(e.matches);
+    mql.addEventListener('change', onChange);
+    return () => mql.removeEventListener('change', onChange);
   }, [theme]);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', resolvedDark);
+  }, [resolvedDark]);
 
   // Detect sandbox mode (no fixed db — /api/meta doesn't exist) vs normal
   // single-DB mode, then fetch meta & tables only in the latter case.
@@ -1536,6 +1529,7 @@ export default function App() {
       }
     });
 
+    setRowsLoading(true);
     apiFetch(url)
       .then(res => res.json())
       .then(body => {
@@ -1545,12 +1539,50 @@ export default function App() {
           console.error(body.error?.message);
         }
       })
-      .catch(console.error);
+      .catch(console.error)
+      .finally(() => setRowsLoading(false));
   }, [selectedTable, page, pageSize, orderBy, dir, filters, refetchTrigger]);
 
   const toggleTheme = () => {
-    setTheme((prev) => (prev === 'light' ? 'dark' : 'light'));
+    setTheme((prev) => (prev === 'dark' ? 'light' : prev === 'light' ? 'system' : 'dark'));
   };
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const isModified = e.metaKey || e.ctrlKey;
+
+      if (isModified && e.key === 'Enter') {
+        if (activeTab === 'sql') {
+          e.preventDefault();
+          runQueryFromEditor();
+        }
+        return;
+      }
+
+      if (isModified && (e.key === 'j' || e.key === 'J')) {
+        e.preventDefault();
+        toggleTheme();
+        return;
+      }
+
+      if (!isModified && e.key === '/') {
+        const active = document.activeElement as HTMLElement | null;
+        const isTyping =
+          !!active &&
+          (active.tagName === 'INPUT' ||
+            active.tagName === 'TEXTAREA' ||
+            active.isContentEditable ||
+            !!active.closest('.cm-editor'));
+        if (!isTyping) {
+          e.preventDefault();
+          tableSearchRef.current?.focus();
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [activeTab]);
 
   const formatBytes = (bytes: number): string => {
     if (bytes === 0) return '0 B';
@@ -1635,8 +1667,7 @@ export default function App() {
   }
 
   const showSandboxError = (message: string) => {
-    setToast({ message, type: 'error' });
-    setTimeout(() => setToast(null), 5000);
+    showToast(message, 'error');
   };
 
   if (sandboxMode && sandboxManageOpen) {
@@ -1653,6 +1684,7 @@ export default function App() {
         onCreate={handleSandboxCreate}
         onError={showSandboxError}
         theme={theme}
+        resolvedDark={resolvedDark}
         toggleTheme={toggleTheme}
       />
     );
@@ -1667,6 +1699,7 @@ export default function App() {
         onSelect={switchActiveDb}
         onError={showSandboxError}
         theme={theme}
+        resolvedDark={resolvedDark}
         toggleTheme={toggleTheme}
       />
     );
@@ -1686,8 +1719,7 @@ export default function App() {
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text).then(() => {
-      setToast({ message: 'Copied to clipboard!', type: 'success' });
-      setTimeout(() => setToast(null), 3000);
+      showToast('Copied to clipboard!', 'success');
     });
   };
 
@@ -1866,9 +1898,11 @@ export default function App() {
           <button
             onClick={toggleTheme}
             className="w-8 h-8 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center transition-colors"
-            title="Toggle theme"
+            title={`Theme: ${theme}`}
           >
-            {theme === 'light' ? (
+            {theme === 'system' ? (
+              <Monitor className="w-4 h-4 text-slate-500" />
+            ) : resolvedDark ? (
               <Moon className="w-4 h-4 text-slate-500" />
             ) : (
               <Sun className="w-4 h-4 text-amber-400" />
@@ -1882,6 +1916,7 @@ export default function App() {
         <aside className="w-60 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-col shrink-0">
           <div className="p-2">
             <input
+              ref={tableSearchRef}
               placeholder="Search tables…"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
@@ -1892,7 +1927,14 @@ export default function App() {
             Tables & Views
           </div>
           <nav className="flex-1 overflow-y-auto px-2 text-sm space-y-0.5">
-            {tables.length === 0 ? (
+            {tablesLoading && tables.length === 0 ? (
+              <div className="px-2 space-y-1.5 animate-pulse">
+                <div className="h-6 bg-slate-100 dark:bg-slate-800 rounded" />
+                <div className="h-6 bg-slate-100 dark:bg-slate-800 rounded" />
+                <div className="h-6 bg-slate-100 dark:bg-slate-800 rounded" />
+                <div className="h-6 bg-slate-100 dark:bg-slate-800 rounded" />
+              </div>
+            ) : tables.length === 0 ? (
               <div className="flex flex-col items-center text-center gap-2 px-3 py-8 text-slate-400 dark:text-slate-600">
                 <Database className="w-6 h-6" />
                 <span className="text-xs">No tables yet</span>
@@ -1935,7 +1977,6 @@ export default function App() {
               { id: 'seed', label: 'Seed' },
               { id: 'export', label: 'Export' },
               { id: 'rest', label: 'REST' },
-              { id: 'codegen', label: 'Code Gen' },
               { id: 'info', label: 'Info' },
             ].map((tab) => (
               <button
@@ -2020,6 +2061,21 @@ export default function App() {
                   </div>
                 </div>
 
+                {rowsLoading ? (
+                  <div className="border border-slate-200 dark:border-slate-800 rounded-lg bg-white dark:bg-slate-900 flex-1 min-h-0 p-3 space-y-2 animate-pulse">
+                    <div className="h-6 bg-slate-100 dark:bg-slate-800 rounded" />
+                    <div className="h-5 bg-slate-100 dark:bg-slate-800 rounded" />
+                    <div className="h-5 bg-slate-100 dark:bg-slate-800 rounded" />
+                    <div className="h-5 bg-slate-100 dark:bg-slate-800 rounded" />
+                    <div className="h-5 bg-slate-100 dark:bg-slate-800 rounded" />
+                    <div className="h-5 bg-slate-100 dark:bg-slate-800 rounded" />
+                  </div>
+                ) : rowsData && rowsData.total === 0 && !inlineAddRow ? (
+                  <div className="border border-slate-200 dark:border-slate-800 rounded-lg bg-white dark:bg-slate-900 flex-1 min-h-0 flex flex-col items-center justify-center text-center text-slate-400 dark:text-slate-600 gap-2">
+                    <Database className="w-8 h-8" />
+                    <p className="text-sm">This table has no rows</p>
+                  </div>
+                ) : (
                 <div className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-auto bg-white dark:bg-slate-900 flex-1 min-h-0">
                   <table className="w-full text-sm font-mono relative">
                     <thead className="bg-slate-100 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400 text-left sticky top-0 z-10">
@@ -2239,6 +2295,7 @@ export default function App() {
                     </tbody>
                   </table>
                 </div>
+                )}
 
                 <div className="flex items-center justify-between text-sm text-slate-500 shrink-0">
                   <span>
@@ -2466,7 +2523,7 @@ export default function App() {
                         value={sqlValue}
                         onChange={setSqlValue}
                         onRun={handleExecuteQuery}
-                        theme={theme}
+                        theme={resolvedDark ? 'dark' : 'light'}
                         editorViewRef={editorViewRef}
                       />
                     </div>
@@ -2479,8 +2536,30 @@ export default function App() {
                       </div>
                     )}
 
+                    {/* Placeholder before first run */}
+                    {!queryResult && !queryLoading && !queryError && (
+                      <div className="flex-1 flex flex-col items-center justify-center text-center text-slate-400 dark:text-slate-600 gap-2">
+                        <Terminal className="w-8 h-8" />
+                        <p className="text-sm">Run a query to see results</p>
+                      </div>
+                    )}
+
+                    {/* Skeleton while query runs */}
+                    {queryLoading && (
+                      <div className="flex-1 flex flex-col min-h-0 gap-2 animate-pulse">
+                        <div className="h-4 w-40 bg-slate-200 dark:bg-slate-800 rounded shrink-0" />
+                        <div className="border border-slate-200 dark:border-slate-800 rounded-lg bg-white dark:bg-slate-900 flex-1 min-h-0 p-3 space-y-2">
+                          <div className="h-6 bg-slate-100 dark:bg-slate-800 rounded" />
+                          <div className="h-5 bg-slate-100 dark:bg-slate-800 rounded" />
+                          <div className="h-5 bg-slate-100 dark:bg-slate-800 rounded" />
+                          <div className="h-5 bg-slate-100 dark:bg-slate-800 rounded" />
+                          <div className="h-5 bg-slate-100 dark:bg-slate-800 rounded" />
+                        </div>
+                      </div>
+                    )}
+
                     {/* Results / Grid */}
-                    {queryResult && (
+                    {queryResult && !queryLoading && (
                       <div className="flex-1 flex flex-col min-h-0 gap-2">
                         {/* Status Bar */}
                         <div className="flex items-center justify-between text-xs text-slate-500 shrink-0">
@@ -3424,20 +3503,8 @@ export default function App() {
             {activeTab === 'rest' && (
               <RestTab
                 selectedTable={selectedTable}
-                onToast={(message, type) => {
-                  setToast({ message, type });
-                  setTimeout(() => setToast(null), type === 'error' ? 5000 : 3000);
-                }}
+                onToast={(message, type) => showToast(message, type)}
               />
-            )}
-
-            {/* CODEGEN PANEL */}
-            {activeTab === 'codegen' && (
-              <section className="space-y-4">
-                <pre className="font-mono text-sm bg-slate-900 text-slate-100 rounded-lg p-4 overflow-x-auto border border-slate-800">
-                  {`package main\n\ntype User struct {\n\tID    int64  \`json:"id"\`\n\tEmail string \`json:"email"\`\n}`}
-                </pre>
-              </section>
             )}
 
             {/* INFO PANEL */}
