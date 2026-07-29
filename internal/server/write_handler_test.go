@@ -1098,3 +1098,110 @@ func TestForeignKeyOpsReadOnlyAndNotFound(t *testing.T) {
 		t.Errorf("expected 404 Not Found for nonexistent table, got %d", resp.StatusCode)
 	}
 }
+
+func TestBulkDeleteRowsHandler(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "bulk_delete_test.db")
+	database, err := db.OpenDB(dbPath, false)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer database.Close()
+
+	_, err = database.Exec(`
+		CREATE TABLE parent (id INTEGER PRIMARY KEY, name TEXT);
+		CREATE TABLE child (
+			id INTEGER PRIMARY KEY,
+			parent_id INTEGER NOT NULL,
+			FOREIGN KEY (parent_id) REFERENCES parent(id)
+		);
+		INSERT INTO parent (id, name) VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd');
+		INSERT INTO child (id, parent_id) VALUES (100, 3);
+	`)
+	if err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+	if _, err := database.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		t.Fatalf("failed to enable foreign_keys: %v", err)
+	}
+
+	srv := NewServer(database, dbPath, true, false, false, "127.0.0.1", 7072, "info")
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client := ts.Client()
+
+	postBulkDelete := func(keys []map[string]any) (*http.Response, apiResponse) {
+		body, _ := json.Marshal(map[string]any{"keys": keys})
+		resp, err := client.Post(ts.URL+"/api/tables/parent/rows/bulk-delete", "application/json", bytes.NewBuffer(body))
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		res := parseResponse(t, resp)
+		resp.Body.Close()
+		return resp, res
+	}
+
+	// 1. Success: delete two independent rows in one call.
+	resp, res := postBulkDelete([]map[string]any{{"id": 1}, {"id": 2}})
+	if resp.StatusCode != http.StatusOK || !res.Ok {
+		t.Fatalf("expected success, got status %d, %+v", resp.StatusCode, res.Error)
+	}
+	if deleted, _ := res.Data["deleted"].(float64); deleted != 2 {
+		t.Errorf("expected deleted=2, got %v", res.Data["deleted"])
+	}
+	var count int
+	database.QueryRow("SELECT COUNT(*) FROM parent WHERE id IN (1,2)").Scan(&count)
+	if count != 0 {
+		t.Errorf("expected rows 1 and 2 to be gone, found %d", count)
+	}
+
+	// 2. Partial failure (row 3 has a FK reference from child) rolls back the
+	// whole batch: row 4 must NOT be deleted even though its own key is fine.
+	resp, res = postBulkDelete([]map[string]any{{"id": 4}, {"id": 3}})
+	if resp.StatusCode == http.StatusOK || res.Ok {
+		t.Fatalf("expected the FK-constrained batch to fail, got status %d, %+v", resp.StatusCode, res)
+	}
+	database.QueryRow("SELECT COUNT(*) FROM parent WHERE id = 4").Scan(&count)
+	if count != 1 {
+		t.Errorf("expected row 4 to still exist after rollback, count=%d", count)
+	}
+	database.QueryRow("SELECT COUNT(*) FROM parent WHERE id = 3").Scan(&count)
+	if count != 1 {
+		t.Errorf("expected row 3 to still exist after rollback, count=%d", count)
+	}
+
+	// 3. A missing key aborts the whole batch (row 4 stays even though it's
+	// listed first and would otherwise succeed).
+	resp, res = postBulkDelete([]map[string]any{{"id": 4}, {"id": 999}})
+	if resp.StatusCode != http.StatusNotFound || res.Ok {
+		t.Fatalf("expected 404 NOT_FOUND for missing key, got status %d, %+v", resp.StatusCode, res)
+	}
+	database.QueryRow("SELECT COUNT(*) FROM parent WHERE id = 4").Scan(&count)
+	if count != 1 {
+		t.Errorf("expected row 4 to still exist after abort-whole-batch, count=%d", count)
+	}
+
+	// 4. Read-only mode rejects bulk-delete.
+	roDBPath := filepath.Join(t.TempDir(), "bulk_delete_ro_test.db")
+	roDatabase, err := db.OpenDB(roDBPath, false)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer roDatabase.Close()
+	if _, err := roDatabase.Exec("CREATE TABLE parent (id INTEGER PRIMARY KEY, name TEXT)"); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+	roSrv := NewServer(roDatabase, roDBPath, false, false, false, "127.0.0.1", 7073, "info")
+	roTS := httptest.NewServer(roSrv.Handler())
+	defer roTS.Close()
+
+	body, _ := json.Marshal(map[string]any{"keys": []map[string]any{{"id": 1}}})
+	resp, err = roTS.Client().Post(roTS.URL+"/api/tables/parent/rows/bulk-delete", "application/json", bytes.NewBuffer(body))
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	res = parseResponse(t, resp)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden || res.Error == nil || res.Error.Code != "READ_ONLY" {
+		t.Errorf("expected 403 READ_ONLY, got status %d, %+v", resp.StatusCode, res.Error)
+	}
+}

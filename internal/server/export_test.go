@@ -163,6 +163,120 @@ func TestServerExportTable(t *testing.T) {
 		}
 	})
 
+	t.Run("CSV Export Column Subset", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/tables/users/export?format=csv&columns=name,id", nil)
+		resp := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(resp, req)
+
+		if resp.Code != http.StatusOK {
+			t.Errorf("expected 200, got %d", resp.Code)
+		}
+		expectedCSV := "name,id\nAlice,1\nBob,2\nCharlie,3\n"
+		if resp.Body.String() != expectedCSV {
+			t.Errorf("expected body %q, got %q", expectedCSV, resp.Body.String())
+		}
+	})
+
+	t.Run("CSV Export Column Subset With Filter", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/tables/users/export?format=csv&columns=name&filtered=true&filter[role]=user&orderBy=id&dir=asc", nil)
+		resp := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(resp, req)
+
+		if resp.Code != http.StatusOK {
+			t.Errorf("expected 200, got %d", resp.Code)
+		}
+		expectedCSV := "name\nBob\nCharlie\n"
+		if resp.Body.String() != expectedCSV {
+			t.Errorf("expected body %q, got %q", expectedCSV, resp.Body.String())
+		}
+	})
+
+	t.Run("Export Rejects Unknown Column", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/tables/users/export?format=csv&columns=name,bogus", nil)
+		resp := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(resp, req)
+
+		if resp.Code != http.StatusBadRequest {
+			t.Errorf("expected 400, got %d", resp.Code)
+		}
+		var errResp map[string]any
+		if err := json.Unmarshal(resp.Body.Bytes(), &errResp); err != nil {
+			t.Fatalf("failed to parse JSON error: %v", err)
+		}
+		errObj, _ := errResp["error"].(map[string]any)
+		if errObj["code"] != "VALIDATION" {
+			t.Errorf("expected VALIDATION error, got %v", errResp["error"])
+		}
+	})
+
+	t.Run("All Ten Formats Succeed", func(t *testing.T) {
+		formats := []string{"csv", "json", "sql", "yaml", "xml", "toml", "bson", "protobuf", "xlsx", "parquet"}
+		for _, format := range formats {
+			req := httptest.NewRequest("GET", "/api/tables/users/export?format="+format, nil)
+			resp := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(resp, req)
+
+			if resp.Code != http.StatusOK {
+				t.Errorf("format %s: expected 200, got %d: %s", format, resp.Code, resp.Body.String())
+				continue
+			}
+			if resp.Body.Len() == 0 {
+				t.Errorf("format %s: expected non-empty body", format)
+			}
+		}
+	})
+
+	t.Run("New Format Column Subset", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/tables/users/export?format=yaml&columns=name", nil)
+		resp := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(resp, req)
+
+		if resp.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
+		}
+		body := resp.Body.String()
+		if strings.Contains(body, "role:") || strings.Contains(body, "id:") {
+			t.Errorf("expected only 'name' column in yaml output, got:\n%s", body)
+		}
+		if !strings.Contains(body, "name: Alice") && !strings.Contains(body, `name: "Alice"`) {
+			t.Errorf("expected name column present, got:\n%s", body)
+		}
+	})
+
+	t.Run("XML Export Uses Table Name Defaults", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/tables/users/export?format=xml", nil)
+		resp := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(resp, req)
+
+		if resp.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
+		}
+		body := resp.Body.String()
+		if !strings.Contains(body, "<users>") || !strings.Contains(body, "<user>") {
+			t.Errorf("expected <users>/<user> tags derived from the table name, got:\n%s", body)
+		}
+		if !strings.Contains(body, "<id>1</id>") {
+			t.Errorf("expected snake_case column tags by default, got:\n%s", body)
+		}
+	})
+
+	t.Run("XML Export Configurable Tags And Case", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/tables/users/export?format=xml&xmlRootTag=results&xmlRowTag=item&xmlCase=camel&xmlPretty=false&xmlDeclaration=false", nil)
+		resp := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(resp, req)
+
+		if resp.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
+		}
+		body := resp.Body.String()
+		if !strings.Contains(body, "<results>") || !strings.Contains(body, "<item>") {
+			t.Errorf("expected custom <results>/<item> tags, got:\n%s", body)
+		}
+		if strings.Contains(body, "<?xml") {
+			t.Errorf("expected no XML declaration, got:\n%s", body)
+		}
+	})
+
 	t.Run("Export Nonexistent Table", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/api/tables/missing_table/export?format=csv", nil)
 		resp := httptest.NewRecorder()
@@ -215,6 +329,53 @@ func TestServerQueryExport(t *testing.T) {
 		disp := resp.Header().Get("Content-Disposition")
 		if !strings.Contains(disp, `filename="query-export.csv"`) {
 			t.Errorf("unexpected Content-Disposition: %s", disp)
+		}
+	})
+
+	t.Run("Query Export Column Subset Projection", func(t *testing.T) {
+		body := `{"sql": "SELECT id, name FROM items ORDER BY id ASC"}`
+		req := httptest.NewRequest("POST", "/api/export/query?format=csv&columns=name", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(resp, req)
+
+		if resp.Code != http.StatusOK {
+			t.Errorf("expected 200, got %d", resp.Code)
+		}
+		expected := "name\nitem1\nitem2\n"
+		if resp.Body.String() != expected {
+			t.Errorf("expected body %q, got %q", expected, resp.Body.String())
+		}
+	})
+
+	t.Run("Query Export Rejects Unknown Column In Projection", func(t *testing.T) {
+		body := `{"sql": "SELECT id, name FROM items"}`
+		req := httptest.NewRequest("POST", "/api/export/query?format=csv&columns=bogus", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(resp, req)
+
+		if resp.Code != http.StatusBadRequest {
+			t.Errorf("expected 400, got %d", resp.Code)
+		}
+	})
+
+	t.Run("Query Export New Formats Succeed", func(t *testing.T) {
+		formats := []string{"yaml", "xml", "toml", "bson", "protobuf", "xlsx", "parquet"}
+		for _, format := range formats {
+			body := `{"sql": "SELECT id, name FROM items"}`
+			req := httptest.NewRequest("POST", "/api/export/query?format="+format, strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			resp := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(resp, req)
+
+			if resp.Code != http.StatusOK {
+				t.Errorf("format %s: expected 200, got %d: %s", format, resp.Code, resp.Body.String())
+				continue
+			}
+			if resp.Body.Len() == 0 {
+				t.Errorf("format %s: expected non-empty body", format)
+			}
 		}
 	})
 

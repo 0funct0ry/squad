@@ -11,14 +11,15 @@ import {
   Trash2,
   AlertTriangle,
   FileSpreadsheet,
-  Braces,
   Database,
   RefreshCw,
   Check,
   AlertCircle,
   Download,
   AudioLines,
-  LibraryBig
+  LibraryBig,
+  Upload,
+  Columns3
 } from 'lucide-react';
 import {
   sniffHex,
@@ -38,6 +39,9 @@ import SandboxManagePage from './components/SandboxManagePage';
 import ExamplesPicker, { type ExampleMeta } from './components/ExamplesPicker';
 import ConfirmModal from './components/ConfirmModal';
 import RestTab from './components/RestTab';
+import RowGrid from './components/RowGrid';
+import ImportModal from './components/ImportModal';
+import XmlExportModal, { defaultXmlExportOptions, type XmlExportOptions } from './components/XmlExportModal';
 import { apiFetch, apiUrl, setApiBase } from './lib/api';
 
 interface MetaData {
@@ -206,6 +210,8 @@ interface QueryResult {
   limit: number;
   truncated: boolean;
   schemaChanged: boolean;
+  sourceTable?: string;
+  primaryKeyColumns?: string[];
 }
 
 interface QueryHistoryEntry {
@@ -214,6 +220,19 @@ interface QueryHistoryEntry {
   ok: boolean;
   durationMs?: number;
 }
+
+const EXPORT_FORMATS: { id: string; label: string; description: string }[] = [
+  { id: 'csv', label: 'CSV', description: 'Comma-separated' },
+  { id: 'json', label: 'JSON', description: 'Array of objects' },
+  { id: 'sql', label: 'SQL', description: 'INSERT statements' },
+  { id: 'yaml', label: 'YAML', description: 'YAML document' },
+  { id: 'xml', label: 'XML', description: 'XML document' },
+  { id: 'toml', label: 'TOML', description: 'TOML document' },
+  { id: 'bson', label: 'BSON', description: 'Binary JSON' },
+  { id: 'protobuf', label: 'Protobuf', description: 'Protocol Buffers' },
+  { id: 'xlsx', label: 'XLSX', description: 'Excel workbook' },
+  { id: 'parquet', label: 'Parquet', description: 'Columnar Parquet' },
+];
 
 const themeCompartment = new Compartment();
 
@@ -538,12 +557,13 @@ export default function App() {
 
   // Data grid inline CRUD states
   const [inlineAddRow, setInlineAddRow] = useState<Record<string, any> | null>(null);
-  const [editingRowIndex, setEditingRowIndex] = useState<number | null>(null);
-  const [editingRowValues, setEditingRowValues] = useState<Record<string, any>>({});
+  const [, setEditingRowIndex] = useState<number | null>(null);
   const [refetchTrigger, setRefetchTrigger] = useState<number>(0);
-  const [deleteConfirmation, setDeleteConfirmation] = useState<{ row: any[]; rIdx: number } | null>(null);
   const [dropColumnConfirmation, setDropColumnConfirmation] = useState<{ colName: string } | null>(null);
   const [dropTableConfirmation, setDropTableConfirmation] = useState<boolean>(false);
+  const [importModalOpen, setImportModalOpen] = useState<boolean>(false);
+  const [dropIndexConfirmation, setDropIndexConfirmation] = useState<IndexInfo | null>(null);
+  const [dropTriggerConfirmation, setDropTriggerConfirmation] = useState<TriggerInfo | null>(null);
 
   // Pagination & Sorting & Filtering states
   const [page, setPage] = useState<number>(1);
@@ -585,9 +605,118 @@ export default function App() {
   // Export States
   const [applyFilterSort, setApplyFilterSort] = useState<boolean>(false);
   const [includeSchema, setIncludeSchema] = useState<boolean>(false);
-  const [selectedExportFormat, setSelectedExportFormat] = useState<'csv' | 'json' | 'sql'>('csv');
+  const [selectedExportFormat, setSelectedExportFormat] = useState<string>('csv');
   const [exportQueryLoading, setExportQueryLoading] = useState<boolean>(false);
   const [lastExecutedSql, setLastExecutedSql] = useState<string>('');
+  const [selectedExportColumns, setSelectedExportColumns] = useState<string[]>([]);
+
+  const exportColumnsStorageKey = (tableName: string) => `squad:export-columns:${tableName}`;
+  const visibleColumnsStorageKey = (tableName: string) => `squad:visible-columns:${tableName}`;
+
+  const [hiddenDataColumns, setHiddenDataColumns] = useState<Set<string>>(new Set());
+  const [columnPickerOpen, setColumnPickerOpen] = useState<boolean>(false);
+
+  // Load the persisted column visibility whenever the table changes.
+  useEffect(() => {
+    setColumnPickerOpen(false);
+    if (!selectedTable) {
+      setHiddenDataColumns(new Set());
+      return;
+    }
+    try {
+      const saved = localStorage.getItem(visibleColumnsStorageKey(selectedTable.name));
+      if (saved) {
+        setHiddenDataColumns(new Set(JSON.parse(saved) as string[]));
+        return;
+      }
+    } catch {
+      // ignore malformed localStorage value
+    }
+    setHiddenDataColumns(new Set());
+  }, [selectedTable?.name]);
+
+  const toggleDataColumnVisibility = (col: string) => {
+    if (!selectedTable) return;
+    setHiddenDataColumns((prev) => {
+      const next = new Set(prev);
+      if (next.has(col)) next.delete(col);
+      else next.add(col);
+      localStorage.setItem(visibleColumnsStorageKey(selectedTable.name), JSON.stringify(Array.from(next)));
+      return next;
+    });
+  };
+
+  // Load the persisted column selection whenever the table (or its schema) changes.
+  useEffect(() => {
+    if (!selectedTable || !schema) return;
+    const allCols = schema.columns.map(c => c.name);
+    try {
+      const saved = localStorage.getItem(exportColumnsStorageKey(selectedTable.name));
+      if (saved) {
+        const parsed = JSON.parse(saved) as string[];
+        const filtered = parsed.filter(c => allCols.includes(c));
+        setSelectedExportColumns(filtered.length > 0 ? filtered : allCols);
+        return;
+      }
+    } catch {
+      // ignore malformed localStorage value
+    }
+    setSelectedExportColumns(allCols);
+  }, [selectedTable?.name, schema]);
+
+  const toggleExportColumn = (col: string) => {
+    setSelectedExportColumns((prev) => {
+      const next = prev.includes(col) ? prev.filter((c) => c !== col) : [...prev, col];
+      if (selectedTable) {
+        localStorage.setItem(exportColumnsStorageKey(selectedTable.name), JSON.stringify(next));
+      }
+      return next;
+    });
+  };
+
+  const buildExportUrl = (format: string, xmlOpts?: XmlExportOptions): string => {
+    if (!selectedTable) return '';
+    let url = `/tables/${encodeURIComponent(selectedTable.name)}/export?format=${format}`;
+    if (applyFilterSort && (orderBy || Object.values(filters).some(v => v !== ''))) {
+      url += `&filtered=true`;
+      if (orderBy) url += `&orderBy=${encodeURIComponent(orderBy)}`;
+      if (dir) url += `&dir=${encodeURIComponent(dir)}`;
+      Object.entries(filters).forEach(([col, val]) => {
+        if (val !== '') url += `&filter[${encodeURIComponent(col)}]=${encodeURIComponent(val)}`;
+      });
+    }
+    if (format === 'sql' && includeSchema) {
+      url += `&includeSchema=true`;
+    }
+    const allCols = schema?.columns.map(c => c.name) || [];
+    if (selectedExportColumns.length > 0 && selectedExportColumns.length < allCols.length) {
+      url += `&columns=${selectedExportColumns.map(encodeURIComponent).join(',')}`;
+    }
+    if (format === 'xml' && xmlOpts) {
+      url += `&xmlRootTag=${encodeURIComponent(xmlOpts.rootTag)}`;
+      url += `&xmlRowTag=${encodeURIComponent(xmlOpts.rowTag)}`;
+      url += `&xmlCase=${encodeURIComponent(xmlOpts.caseStyle)}`;
+      url += `&xmlPretty=${xmlOpts.pretty}`;
+      url += `&xmlIndent=${xmlOpts.indentSize}`;
+      url += `&xmlDeclaration=${xmlOpts.includeDeclaration}`;
+      url += `&xmlNullHandling=${encodeURIComponent(xmlOpts.nullHandling)}`;
+    }
+    return url;
+  };
+
+  const xmlExportOptionsStorageKey = (tableName: string) => `squad:xml-export-options:${tableName}`;
+
+  const loadXmlExportOptions = (tableName: string): XmlExportOptions => {
+    try {
+      const saved = localStorage.getItem(xmlExportOptionsStorageKey(tableName));
+      if (saved) return { ...defaultXmlExportOptions(tableName), ...JSON.parse(saved) };
+    } catch {
+      // ignore malformed localStorage value
+    }
+    return defaultXmlExportOptions(tableName);
+  };
+
+  const [xmlExportModalOpen, setXmlExportModalOpen] = useState<boolean>(false);
 
   // Sandbox mode state — normal (single-DB) mode is entirely unaffected by
   // this: sandboxMode stays false and none of it renders.
@@ -1310,68 +1439,115 @@ export default function App() {
     }
   };
 
-  const handleSaveEditRow = async (row: any[]) => {
+  const coerceRowValues = (values: Record<string, any>): Record<string, any> => {
+    const out: Record<string, any> = {};
+    Object.entries(values).forEach(([col, val]) => {
+      if (col === 'rowid') return;
+      const colType = schema?.columns.find(c => c.name === col)?.type || '';
+      if (val === '' || val === null || val === undefined) {
+        out[col] = null;
+      } else if (['integer', 'real', 'numeric'].includes(colType.toLowerCase())) {
+        const num = Number(val);
+        out[col] = isNaN(num) ? val : num;
+      } else {
+        out[col] = val;
+      }
+    });
+    return out;
+  };
+
+  const handleSaveEditRowFromGrid = async (key: Record<string, any>, values: Record<string, any>) => {
     if (!selectedTable || !isWrite) return;
     try {
-      const key = getRowKey(row);
-      const values: Record<string, any> = {};
-      Object.entries(editingRowValues).forEach(([col, val]) => {
-        if (col === 'rowid') return; // omit rowid
-        const colType = schema?.columns.find(c => c.name === col)?.type || '';
-        if (val === '' || val === null || val === undefined) {
-          values[col] = null;
-        } else if (['integer', 'real', 'numeric'].includes(colType.toLowerCase())) {
-          const num = Number(val);
-          values[col] = isNaN(num) ? val : num;
-        } else {
-          values[col] = val;
-        }
-      });
-
-      await updateRow(selectedTable.name, key, values);
+      await updateRow(selectedTable.name, key, coerceRowValues(values));
       showToast('Row updated successfully', 'success');
-      setEditingRowIndex(null);
       setRefetchTrigger(prev => prev + 1);
     } catch (err: any) {
       showToast(err.message || 'Failed to update row', 'error');
     }
   };
 
-  const handleDeleteRowClick = (row: any[], rIdx: number) => {
+  const executeDeleteRowFromGrid = async (key: Record<string, any>) => {
     if (!selectedTable || !isWrite) return;
-    setDeleteConfirmation({ row, rIdx });
-  };
-
-  const executeDeleteRow = async (row: any[], rIdx: number) => {
-    if (!selectedTable || !isWrite) return;
-    const key = getRowKey(row);
-    
-    // Optimistic delete
-    const originalRows = rowsData ? [...rowsData.rows] : [];
-    const originalTotal = rowsData ? rowsData.total : 0;
-    if (rowsData) {
-      setRowsData({
-        ...rowsData,
-        rows: rowsData.rows.filter((_, i) => i !== rIdx),
-        total: rowsData.total - 1
-      });
-    }
-
     try {
       await deleteRow(selectedTable.name, key);
       showToast('Row deleted successfully', 'success');
       setRefetchTrigger(prev => prev + 1);
-      fetchMetaAndTables(); // refresh sidebar count
+      fetchMetaAndTables();
     } catch (err: any) {
-      // Revert on error
-      if (rowsData) {
-        setRowsData({
-          ...rowsData,
-          rows: originalRows,
-          total: originalTotal
-        });
-      }
       showToast(err.message || 'Failed to delete row', 'error');
+    }
+  };
+
+  const refetchSchema = async () => {
+    if (!selectedTable) return;
+    const res = await apiFetch(`/tables/${selectedTable.name}/schema`);
+    const body = await res.json();
+    if (body.ok) {
+      setSchema(body.data);
+      setAllSchemas(prev => ({ ...prev, [selectedTable.name]: body.data }));
+    }
+  };
+
+  const executeDropIndex = async (idx: IndexInfo) => {
+    if (!isWrite) return;
+    try {
+      const res = await apiFetch('/ddl', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sql: `DROP INDEX "${idx.name}"` }),
+      });
+      const body = await res.json();
+      if (!res.ok || !body.ok) {
+        const err = body.error || { code: 'HTTP_ERROR', message: `HTTP error ${res.status}` };
+        throw new Error(err.message);
+      }
+      showToast(`Index "${idx.name}" dropped successfully!`, 'success');
+      await refetchSchema();
+    } catch (err: any) {
+      showToast(err.message || 'Failed to drop index', 'error');
+    }
+  };
+
+  const executeDropTrigger = async (t: TriggerInfo) => {
+    if (!isWrite) return;
+    try {
+      const res = await apiFetch('/ddl', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sql: `DROP TRIGGER "${t.name}"` }),
+      });
+      const body = await res.json();
+      if (!res.ok || !body.ok) {
+        const err = body.error || { code: 'HTTP_ERROR', message: `HTTP error ${res.status}` };
+        throw new Error(err.message);
+      }
+      showToast(`Trigger "${t.name}" dropped successfully!`, 'success');
+      await refetchSchema();
+    } catch (err: any) {
+      showToast(err.message || 'Failed to drop trigger', 'error');
+    }
+  };
+
+  const handleBulkDeleteRows = async (keys: Record<string, any>[]) => {
+    if (!selectedTable || !isWrite) return;
+    try {
+      const res = await apiFetch(`/tables/${selectedTable.name}/rows/bulk-delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keys }),
+      });
+      const body = await res.json();
+      if (!res.ok || !body.ok) {
+        const err = body.error || { code: 'HTTP_ERROR', message: `HTTP error ${res.status}` };
+        throw new Error(err.message);
+      }
+      const deleted = body.data?.deleted ?? keys.length;
+      showToast(`${deleted} row${deleted === 1 ? '' : 's'} deleted`, 'success');
+      setRefetchTrigger(prev => prev + 1);
+      fetchMetaAndTables();
+    } catch (err: any) {
+      showToast(err.message || 'Failed to delete selected rows', 'error');
     }
   };
 
@@ -1496,6 +1672,12 @@ export default function App() {
     setGeneratorPickerColumn(null);
     setRecentlyUsedGenerators([]);
     setSeedGeneratorSamples({});
+
+    if (selectedTable.type === 'view') {
+      setSeedPlanError('Views cannot be seeded — pick a table instead.');
+      setSeedPlanLoading(false);
+      return;
+    }
 
     getSeedPlan(selectedTable.name)
       .then((plan) => {
@@ -2048,6 +2230,75 @@ export default function App() {
                     >
                       <RefreshCw className="w-3.5 h-3.5" />
                     </button>
+                    {rowsData && rowsData.columns.length > 0 && (
+                      <div className="relative">
+                        <button
+                          onClick={() => setColumnPickerOpen((o) => !o)}
+                          className="px-2.5 py-1 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-850 cursor-pointer flex items-center gap-1.5"
+                          title="Choose visible columns"
+                        >
+                          <Columns3 className="w-3.5 h-3.5" />
+                          Columns
+                          {hiddenDataColumns.size > 0 && (
+                            <span className="text-[10px] text-indigo-500 dark:text-indigo-400 font-semibold">
+                              {rowsData.columns.length - hiddenDataColumns.size}/{rowsData.columns.length}
+                            </span>
+                          )}
+                        </button>
+                        {columnPickerOpen && (
+                          <>
+                            <div className="fixed inset-0 z-10" onClick={() => setColumnPickerOpen(false)} />
+                            <div className="absolute right-0 mt-1 w-56 max-h-80 overflow-y-auto rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-lg z-20 p-2">
+                              <div className="flex items-center justify-between px-1 pb-1.5 mb-1 border-b border-slate-100 dark:border-slate-800">
+                                <button
+                                  onClick={() => {
+                                    setHiddenDataColumns(new Set());
+                                    if (selectedTable) localStorage.setItem(visibleColumnsStorageKey(selectedTable.name), JSON.stringify([]));
+                                  }}
+                                  className="text-[11px] text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
+                                >
+                                  Select all
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    const all = new Set(rowsData.columns);
+                                    setHiddenDataColumns(all);
+                                    if (selectedTable) localStorage.setItem(visibleColumnsStorageKey(selectedTable.name), JSON.stringify(Array.from(all)));
+                                  }}
+                                  className="text-[11px] text-slate-400 hover:text-red-500 hover:underline cursor-pointer"
+                                >
+                                  Clear all
+                                </button>
+                              </div>
+                              {rowsData.columns.map((col) => (
+                                <label
+                                  key={col}
+                                  className="flex items-center gap-2 px-1 py-1 text-xs text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/50 rounded cursor-pointer"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={!hiddenDataColumns.has(col)}
+                                    onChange={() => toggleDataColumnVisibility(col)}
+                                    className="rounded border-slate-300 dark:border-slate-700 text-indigo-600 focus:ring-indigo-500"
+                                  />
+                                  <span className="font-mono truncate">{col}</span>
+                                </label>
+                              ))}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    )}
+                    {isWrite && (
+                      <button
+                        onClick={() => setImportModalOpen(true)}
+                        className="px-2.5 py-1 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-850 cursor-pointer flex items-center gap-1.5"
+                        title="Import rows from a file"
+                      >
+                        <Upload className="w-3.5 h-3.5" />
+                        Import
+                      </button>
+                    )}
                     <button
                       onClick={handleAddRowClick}
                       className={`px-2.5 py-1 rounded-md border border-slate-200 dark:border-slate-700 ${
@@ -2076,225 +2327,138 @@ export default function App() {
                     <p className="text-sm">This table has no rows</p>
                   </div>
                 ) : (
-                <div className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-auto bg-white dark:bg-slate-900 flex-1 min-h-0">
-                  <table className="w-full text-sm font-mono relative">
-                    <thead className="bg-slate-100 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400 text-left sticky top-0 z-10">
-                      <tr>
-                        {rowsData?.columns.map((col) => {
-                          return (
-                            <th key={col} className="px-3 py-2 font-medium border-b border-slate-200 dark:border-slate-800">
-                              <div className="flex flex-col gap-1">
-                                <div
-                                  className="flex items-center gap-1 cursor-pointer select-none hover:text-indigo-500"
-                                  onClick={() => handleSort(col)}
-                                >
-                                  <span>{col}</span>
-                                  <span className="text-xs">
-                                    {orderBy === col ? (dir === 'asc' ? '▲' : '▼') : '↕'}
-                                  </span>
-                                </div>
-                                <div className="mt-1 font-normal">
-                                  {filterInputVisible[col] ? (
-                                    <input
-                                      type="text"
-                                      placeholder="Filter..."
-                                      value={filters[col] || ''}
-                                      onChange={(e) => handleFilterChange(col, e.target.value)}
-                                      className="text-xs font-normal px-1 py-0.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none w-24"
-                                    />
-                                  ) : (
-                                    <button
-                                      onClick={() => setFilterInputVisible(prev => ({ ...prev, [col]: true }))}
-                                      className="text-[10px] text-slate-400 hover:text-indigo-500 font-normal px-1 rounded border border-transparent hover:border-slate-200 dark:hover:border-slate-800 flex items-center gap-1"
-                                    >
-                                      <Search className="w-2.5 h-2.5" /> Filter
-                                    </button>
-                                  )}
-                                </div>
-                              </div>
-                            </th>
-                          );
-                        })}
-                        {isWrite && (
-                          <th className="px-3 py-2 font-medium border-b border-slate-200 dark:border-slate-800 w-24 text-right">
-                            Actions
-                          </th>
+                <RowGrid
+                  columns={rowsData?.columns || []}
+                  rows={rowsData?.rows || []}
+                  isWrite={isWrite}
+                  getRowKey={getRowKey}
+                  resetKey={selectedTable?.name}
+                  hiddenColumns={hiddenDataColumns}
+                  isColumnReadOnly={(colName) => colName === 'rowid' || schema?.columns.find(c => c.name === colName)?.generated !== null}
+                  isColumnNumeric={(colName) => {
+                    const colType = schema?.columns.find(c => c.name === colName)?.type || '';
+                    return ['integer', 'real', 'numeric'].includes(colType.toLowerCase());
+                  }}
+                  renderHeaderCell={(col) => (
+                    <div className="flex flex-col gap-1">
+                      <div
+                        className="flex items-center gap-1 cursor-pointer select-none hover:text-indigo-500"
+                        onClick={() => handleSort(col)}
+                      >
+                        <span>{col}</span>
+                        <span className="text-xs">
+                          {orderBy === col ? (dir === 'asc' ? '▲' : '▼') : '↕'}
+                        </span>
+                      </div>
+                      <div className="mt-1 font-normal">
+                        {filterInputVisible[col] ? (
+                          <input
+                            type="text"
+                            placeholder="Filter..."
+                            value={filters[col] || ''}
+                            onChange={(e) => handleFilterChange(col, e.target.value)}
+                            className="text-xs font-normal px-1 py-0.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none w-24"
+                          />
+                        ) : (
+                          <button
+                            onClick={() => setFilterInputVisible(prev => ({ ...prev, [col]: true }))}
+                            className="text-[10px] text-slate-400 hover:text-indigo-500 font-normal px-1 rounded border border-transparent hover:border-slate-200 dark:hover:border-slate-800 flex items-center gap-1"
+                          >
+                            <Search className="w-2.5 h-2.5" /> Filter
+                          </button>
                         )}
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-700 dark:text-slate-300">
-                      {/* Inline Add Row */}
-                      {inlineAddRow && (
-                        <tr className="bg-indigo-50/20 dark:bg-indigo-950/10">
-                          {rowsData?.columns.map((col) => {
-                            const colType = schema?.columns.find(c => c.name === col)?.type || '';
-                            const isRowid = col === 'rowid';
-                            const isReadOnly = isRowid || schema?.columns.find(c => c.name === col)?.generated !== null;
-                            const isNumeric = ['integer', 'real', 'numeric'].includes(colType.toLowerCase());
-
-                            return (
-                              <td key={col} className="px-3 py-1.5">
-                                <input
-                                  type={isNumeric ? "number" : "text"}
-                                  step="any"
-                                  disabled={isReadOnly}
-                                  value={inlineAddRow[col] ?? ''}
-                                  placeholder={isReadOnly ? '(auto)' : ''}
-                                  onChange={(e) => {
-                                    setInlineAddRow(prev => ({ ...prev!, [col]: e.target.value }));
-                                  }}
-                                  className="px-2 py-0.5 rounded border border-slate-300 dark:border-slate-750 bg-white dark:bg-slate-950 text-slate-900 dark:text-white font-mono text-xs w-full outline-none"
-                                />
-                              </td>
-                            );
-                          })}
-                          <td className="px-3 py-1.5 space-x-2 text-right whitespace-nowrap">
-                            <button
-                              onClick={handleSaveAddRow}
-                              title="Save"
-                              className="text-emerald-600 dark:text-emerald-450 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 p-1.5 rounded transition-colors text-base cursor-pointer inline-flex items-center justify-center"
-                            >
-                              <Save className="w-4 h-4" />
-                            </button>
-                            <button
-                              onClick={() => setInlineAddRow(null)}
-                              title="Cancel"
-                              className="text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-850 p-1.5 rounded transition-colors text-base cursor-pointer inline-flex items-center justify-center"
-                            >
-                              <X className="w-4 h-4" />
-                            </button>
-                          </td>
-                        </tr>
-                      )}
-
-                      {rowsData?.rows.map((row, rIdx) => {
-                        const isEditing = editingRowIndex === rIdx;
+                      </div>
+                    </div>
+                  )}
+                  renderCell={(val, colName) => {
+                    const colType = schema?.columns.find(c => c.name === colName)?.type || '';
+                    const isBlob = colType.toLowerCase() === 'blob';
+                    if (isBlob && val !== null) {
+                      const hex = String(val);
+                      const bytesCount = Math.ceil(hex.length / 2);
+                      const mediaType = sniffHex(hex);
+                      const openModal = () => {
+                        setBlobModalView(mediaType === 'unknown' ? 'hex' : 'preview');
+                        setBlobModal({ column: colName, hex, type: mediaType });
+                      };
+                      if (mediaType !== 'unknown') {
                         return (
-                          <tr key={rIdx} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
-                            {row.map((val, cIdx) => {
-                              const colName = rowsData.columns[cIdx];
-                              const colType = schema?.columns.find(c => c.name === colName)?.type || '';
-                              const isBlob = colType.toLowerCase() === 'blob';
-                              const isRowid = colName === 'rowid';
-                              const isReadOnly = isRowid || schema?.columns.find(c => c.name === colName)?.generated !== null;
-                              const isNumeric = ['integer', 'real', 'numeric'].includes(colType.toLowerCase());
-
-                              if (isEditing) {
-                                return (
-                                  <td key={cIdx} className="px-3 py-1.5">
-                                    <input
-                                      type={isNumeric ? "number" : "text"}
-                                      step="any"
-                                      disabled={isReadOnly}
-                                      value={editingRowValues[colName] ?? ''}
-                                      onChange={(e) => {
-                                        setEditingRowValues(prev => ({ ...prev, [colName]: e.target.value }));
-                                      }}
-                                      className="px-2 py-0.5 rounded border border-slate-300 dark:border-slate-750 bg-white dark:bg-slate-950 text-slate-900 dark:text-white font-mono text-xs w-full outline-none"
-                                    />
-                                  </td>
-                                );
-                              }
-
-                              if (isBlob && val !== null) {
-                                const hex = String(val);
-                                const bytesCount = Math.ceil(hex.length / 2);
-                                const mediaType = sniffHex(hex);
-                                const openModal = () => {
-                                  setBlobModalView(mediaType === 'unknown' ? 'hex' : 'preview');
-                                  setBlobModal({ column: colName, hex, type: mediaType });
-                                };
-                                if (mediaType !== 'unknown') {
-                                  return (
-                                    <td key={cIdx} className="px-3 py-1.5">
-                                      <button
-                                        onClick={openModal}
-                                        title={`BLOB (${bytesCount} bytes)`}
-                                        className="inline-flex items-center justify-center w-9 h-9 rounded border border-slate-200 dark:border-slate-750 bg-slate-50 dark:bg-slate-800/60 overflow-hidden hover:border-indigo-400 dark:hover:border-indigo-500 transition-colors"
-                                      >
-                                        {mediaType === 'wav' ? (
-                                          <AudioLines className="w-4 h-4 text-indigo-500 dark:text-indigo-400" />
-                                        ) : (
-                                          <img
-                                            src={dataUriFromHex(hex, mediaType)}
-                                            alt={colName}
-                                            className="max-w-full max-h-full object-contain"
-                                          />
-                                        )}
-                                      </button>
-                                    </td>
-                                  );
-                                }
-                                return (
-                                  <td key={cIdx} className="px-3 py-1.5">
-                                    <button
-                                      onClick={openModal}
-                                      className="text-amber-600 dark:text-amber-400 underline decoration-dotted hover:text-amber-500 dark:hover:text-amber-300"
-                                    >
-                                      BLOB ({bytesCount} bytes)
-                                    </button>
-                                  </td>
-                                );
-                              }
-
-                              return (
-                                <td key={cIdx} className="px-3 py-1.5 whitespace-nowrap overflow-hidden max-w-xs text-ellipsis">
-                                  {renderCell(val)}
-                                </td>
-                              );
-                            })}
-                            {isWrite && (
-                              <td className="px-3 py-1.5 space-x-2 text-right whitespace-nowrap">
-                                {isEditing ? (
-                                  <>
-                                    <button
-                                      onClick={() => handleSaveEditRow(row)}
-                                      title="Save"
-                                      className="text-emerald-600 dark:text-emerald-450 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 p-1.5 rounded transition-colors text-base cursor-pointer inline-flex items-center justify-center"
-                                    >
-                                      <Save className="w-4 h-4" />
-                                    </button>
-                                    <button
-                                      onClick={() => setEditingRowIndex(null)}
-                                      title="Cancel"
-                                      className="text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-850 p-1.5 rounded transition-colors text-base cursor-pointer inline-flex items-center justify-center"
-                                    >
-                                      <X className="w-4 h-4" />
-                                    </button>
-                                  </>
-                                ) : (
-                                  <>
-                                    <button
-                                      onClick={() => {
-                                        setEditingRowIndex(rIdx);
-                                        const vals: Record<string, any> = {};
-                                        rowsData.columns.forEach((c, i) => {
-                                          vals[c] = row[i];
-                                        });
-                                        setEditingRowValues(vals);
-                                      }}
-                                      title="Edit"
-                                      className="text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-500/10 p-1.5 rounded transition-colors text-base cursor-pointer inline-flex items-center justify-center"
-                                    >
-                                      <Edit2 className="w-4 h-4" />
-                                    </button>
-                                    <button
-                                      onClick={() => handleDeleteRowClick(row, rIdx)}
-                                      title="Delete"
-                                      className="text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 p-1.5 rounded transition-colors text-base cursor-pointer inline-flex items-center justify-center"
-                                    >
-                                      <Trash2 className="w-4 h-4" />
-                                    </button>
-                                  </>
-                                )}
-                              </td>
+                          <button
+                            onClick={openModal}
+                            title={`BLOB (${bytesCount} bytes)`}
+                            className="inline-flex items-center justify-center w-9 h-9 rounded border border-slate-200 dark:border-slate-750 bg-slate-50 dark:bg-slate-800/60 overflow-hidden hover:border-indigo-400 dark:hover:border-indigo-500 transition-colors"
+                          >
+                            {mediaType === 'wav' ? (
+                              <AudioLines className="w-4 h-4 text-indigo-500 dark:text-indigo-400" />
+                            ) : (
+                              <img
+                                src={dataUriFromHex(hex, mediaType)}
+                                alt={colName}
+                                className="max-w-full max-h-full object-contain"
+                              />
                             )}
-                          </tr>
+                          </button>
+                        );
+                      }
+                      return (
+                        <button
+                          onClick={openModal}
+                          className="text-amber-600 dark:text-amber-400 underline decoration-dotted hover:text-amber-500 dark:hover:text-amber-300"
+                        >
+                          BLOB ({bytesCount} bytes)
+                        </button>
+                      );
+                    }
+                    return renderCell(val);
+                  }}
+                  addRowSlot={inlineAddRow ? (
+                    <tr className="bg-indigo-50/20 dark:bg-indigo-950/10">
+                      {isWrite && <td className="px-3 py-1.5" />}
+                      {rowsData?.columns.map((col) => {
+                        if (hiddenDataColumns.has(col)) return null;
+                        const colType = schema?.columns.find(c => c.name === col)?.type || '';
+                        const isRowid = col === 'rowid';
+                        const isReadOnly = isRowid || schema?.columns.find(c => c.name === col)?.generated !== null;
+                        const isNumeric = ['integer', 'real', 'numeric'].includes(colType.toLowerCase());
+
+                        return (
+                          <td key={col} className="px-3 py-1.5">
+                            <input
+                              type={isNumeric ? "number" : "text"}
+                              step="any"
+                              disabled={isReadOnly}
+                              value={inlineAddRow[col] ?? ''}
+                              placeholder={isReadOnly ? '(auto)' : ''}
+                              onChange={(e) => {
+                                setInlineAddRow(prev => ({ ...prev!, [col]: e.target.value }));
+                              }}
+                              className="px-2 py-0.5 rounded border border-slate-300 dark:border-slate-750 bg-white dark:bg-slate-950 text-slate-900 dark:text-white font-mono text-xs w-full outline-none"
+                            />
+                          </td>
                         );
                       })}
-                    </tbody>
-                  </table>
-                </div>
+                      <td className="px-3 py-1.5 space-x-2 text-right whitespace-nowrap">
+                        <button
+                          onClick={handleSaveAddRow}
+                          title="Save"
+                          className="text-emerald-600 dark:text-emerald-450 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 p-1.5 rounded transition-colors text-base cursor-pointer inline-flex items-center justify-center"
+                        >
+                          <Save className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => setInlineAddRow(null)}
+                          title="Cancel"
+                          className="text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-850 p-1.5 rounded transition-colors text-base cursor-pointer inline-flex items-center justify-center"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </td>
+                    </tr>
+                  ) : undefined}
+                  onSaveEdit={async (key, values) => { await handleSaveEditRowFromGrid(key, values); }}
+                  onDeleteRow={async (key) => { await executeDeleteRowFromGrid(key); }}
+                  onBulkDelete={async (keys) => { await handleBulkDeleteRows(keys); }}
+                />
                 )}
 
                 <div className="flex items-center justify-between text-sm text-slate-500 shrink-0">
@@ -2413,21 +2577,31 @@ export default function App() {
                         <span className="text-sm text-slate-400 italic">none</span>
                       ) : (
                         schema.indexes.map((idx) => (
-                          <div key={idx.name} className="text-sm font-mono text-slate-700 dark:text-slate-300">
-                            <span className="font-semibold text-indigo-500">{idx.name}</span>{' '}
-                            <span className="text-slate-400">
-                              ({idx.columns.join(', ')})
-                            </span>{' '}
-                            {idx.unique && (
-                              <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400">
-                                UNIQUE
-                              </span>
-                            )}{' '}
-                            {idx.partial && (
-                              <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400">
-                                PARTIAL
-                              </span>
-                            )}
+                          <div key={idx.name} className="text-sm font-mono text-slate-700 dark:text-slate-300 flex items-center justify-between gap-2">
+                            <span>
+                              <span className="font-semibold text-indigo-500">{idx.name}</span>{' '}
+                              <span className="text-slate-400">
+                                ({idx.columns.join(', ')})
+                              </span>{' '}
+                              {idx.unique && (
+                                <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400">
+                                  UNIQUE
+                                </span>
+                              )}{' '}
+                              {idx.partial && (
+                                <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400">
+                                  PARTIAL
+                                </span>
+                              )}
+                            </span>
+                            <button
+                              onClick={() => setDropIndexConfirmation(idx)}
+                              disabled={!isWrite}
+                              title={isWrite ? 'Drop index' : 'Write mode required'}
+                              className="text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 p-1.5 rounded transition-colors inline-flex items-center justify-center shrink-0 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
                           </div>
                         ))
                       )}
@@ -2458,7 +2632,17 @@ export default function App() {
                     <div className="border border-slate-200 dark:border-slate-800 rounded-lg bg-white dark:bg-slate-900 p-3 space-y-3">
                       {schema.triggers.map((t) => (
                         <div key={t.name} className="font-mono text-sm space-y-1">
-                          <div className="font-semibold text-indigo-500">{t.name}</div>
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="font-semibold text-indigo-500">{t.name}</div>
+                            <button
+                              onClick={() => setDropTriggerConfirmation(t)}
+                              disabled={!isWrite}
+                              title={isWrite ? 'Drop trigger' : 'Write mode required'}
+                              className="text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 p-1.5 rounded transition-colors inline-flex items-center justify-center shrink-0 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
                           <pre className="bg-slate-50 dark:bg-slate-950 p-2 rounded border border-slate-100 dark:border-slate-800 overflow-x-auto text-xs">
                             {t.sql}
                           </pre>
@@ -2607,6 +2791,59 @@ export default function App() {
                         </div>
 
                         {/* Results Grid */}
+                        {queryResult.sourceTable && queryResult.primaryKeyColumns && queryResult.primaryKeyColumns.length > 0 ? (
+                          <RowGrid
+                            columns={queryResult.columns}
+                            rows={queryResult.rows}
+                            isWrite={isWrite}
+                            resetKey={lastExecutedSql}
+                            getRowKey={(row) => {
+                              const key: Record<string, any> = {};
+                              (queryResult.primaryKeyColumns || []).forEach((pkCol) => {
+                                const idx = queryResult.columns.indexOf(pkCol);
+                                if (idx !== -1) key[pkCol] = row[idx];
+                              });
+                              return key;
+                            }}
+                            onSaveEdit={async (key, values) => {
+                              try {
+                                await updateRow(queryResult.sourceTable!, key, coerceRowValues(values));
+                                showToast('Row updated successfully', 'success');
+                                handleExecuteQuery(lastExecutedSql);
+                              } catch (err: any) {
+                                showToast(err.message || 'Failed to update row', 'error');
+                              }
+                            }}
+                            onDeleteRow={async (key) => {
+                              try {
+                                await deleteRow(queryResult.sourceTable!, key);
+                                showToast('Row deleted successfully', 'success');
+                                handleExecuteQuery(lastExecutedSql);
+                              } catch (err: any) {
+                                showToast(err.message || 'Failed to delete row', 'error');
+                              }
+                            }}
+                            onBulkDelete={async (keys) => {
+                              try {
+                                const res = await apiFetch(`/tables/${queryResult.sourceTable}/rows/bulk-delete`, {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ keys }),
+                                });
+                                const body = await res.json();
+                                if (!res.ok || !body.ok) {
+                                  const err = body.error || { code: 'HTTP_ERROR', message: `HTTP error ${res.status}` };
+                                  throw new Error(err.message);
+                                }
+                                const deleted = body.data?.deleted ?? keys.length;
+                                showToast(`${deleted} row${deleted === 1 ? '' : 's'} deleted`, 'success');
+                                handleExecuteQuery(lastExecutedSql);
+                              } catch (err: any) {
+                                showToast(err.message || 'Failed to delete selected rows', 'error');
+                              }
+                            }}
+                          />
+                        ) : (
                         <div className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-auto bg-white dark:bg-slate-900 flex-1 min-h-0">
                           <table className="w-full text-sm font-mono relative">
                             <thead className="bg-slate-100 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400 text-left sticky top-0 z-10">
@@ -2631,15 +2868,27 @@ export default function App() {
                             </tbody>
                           </table>
                         </div>
+                        )}
                       </div>
                     )}
                   </div>
 
                   {/* Right: History Panel */}
                   <div className="w-64 border border-slate-200 dark:border-slate-800 rounded-lg bg-white dark:bg-slate-900 p-3 flex flex-col min-h-0 shrink-0">
-                    <h3 className="text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2 shrink-0">
-                      Query History
-                    </h3>
+                    <div className="flex items-center justify-between mb-2 shrink-0">
+                      <h3 className="text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
+                        Query History
+                      </h3>
+                      {queryHistory.length > 0 && (
+                        <button
+                          onClick={() => setQueryHistory([])}
+                          title="Clear all history"
+                          className="text-slate-400 hover:text-red-500 dark:hover:text-red-400 p-1 rounded transition-colors cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
                     <div className="flex-1 overflow-y-auto space-y-2 pr-1">
                       {queryHistory.length === 0 ? (
                         <div className="text-xs text-slate-400 italic">No queries run this session.</div>
@@ -2648,9 +2897,19 @@ export default function App() {
                           <div
                             key={idx}
                             onClick={() => setSqlValue(item.sql)}
-                            className="p-2 rounded border border-slate-100 dark:border-slate-800 hover:border-indigo-500 dark:hover:border-indigo-500/50 hover:bg-slate-50 dark:hover:bg-slate-800/30 cursor-pointer flex flex-col gap-1 transition-all group"
+                            className="p-2 rounded border border-slate-100 dark:border-slate-800 hover:border-indigo-500 dark:hover:border-indigo-500/50 hover:bg-slate-50 dark:hover:bg-slate-800/30 cursor-pointer flex flex-col gap-1 transition-all group relative"
                           >
-                            <div className="text-xs font-mono line-clamp-2 text-slate-700 dark:text-slate-300 group-hover:text-indigo-650 dark:group-hover:text-indigo-400 break-all">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setQueryHistory((prev) => prev.filter((_, i) => i !== idx));
+                              }}
+                              title="Remove this entry"
+                              className="absolute top-1.5 right-1.5 text-slate-300 dark:text-slate-600 hover:text-red-500 dark:hover:text-red-400 p-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                            <div className="text-xs font-mono line-clamp-2 pr-4 text-slate-700 dark:text-slate-300 group-hover:text-indigo-650 dark:group-hover:text-indigo-400 break-all">
                               {item.sql}
                             </div>
                             <div className="flex items-center justify-between text-[10px] text-slate-400">
@@ -3383,90 +3642,77 @@ export default function App() {
                   Export <span className="font-mono text-indigo-650 dark:text-indigo-400">{selectedTable.name}</span>
                 </h3>
                 
-                <div className="grid sm:grid-cols-3 gap-3 max-w-2xl">
-                  {/* CSV Card */}
-                  <button
-                    onClick={() => {
-                      setSelectedExportFormat('csv');
-                      let url = `/tables/${encodeURIComponent(selectedTable.name)}/export?format=csv`;
-                      if (applyFilterSort && (orderBy || Object.values(filters).some(v => v !== ''))) {
-                        url += `&filtered=true`;
-                        if (orderBy) url += `&orderBy=${encodeURIComponent(orderBy)}`;
-                        if (dir) url += `&dir=${encodeURIComponent(dir)}`;
-                        Object.entries(filters).forEach(([col, val]) => {
-                          if (val !== '') url += `&filter[${encodeURIComponent(col)}]=${encodeURIComponent(val)}`;
-                        });
-                      }
-                      window.location.href = apiUrl(url);
-                    }}
-                    className={`p-4 rounded-lg border text-left transition-all cursor-pointer ${
-                      selectedExportFormat === 'csv'
-                        ? 'border-indigo-600 dark:border-indigo-500 bg-indigo-50/30 dark:bg-indigo-950/20 shadow-sm font-medium'
-                        : 'border-slate-205 dark:border-slate-800 hover:border-indigo-400 dark:hover:border-indigo-500/50'
-                    }`}
-                  >
-                    <FileSpreadsheet className="w-6 h-6 text-indigo-500 mb-1" />
-                    <div className="font-medium text-slate-900 dark:text-white">CSV</div>
-                    <div className="text-xs text-slate-400 mb-1">Comma-separated</div>
-                    <div className="text-[10px] text-slate-500 italic mt-2 border-t border-slate-100 dark:border-slate-800/80 pt-1.5">
-                      NULL values export as empty fields.
+                {/* Column selection */}
+                {schema && (
+                  <div className="max-w-2xl">
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Columns</h4>
+                      <div className="flex items-center gap-2 text-[11px]">
+                        <button
+                          onClick={() => {
+                            const allCols = schema.columns.map(c => c.name);
+                            setSelectedExportColumns(allCols);
+                            if (selectedTable) localStorage.setItem(exportColumnsStorageKey(selectedTable.name), JSON.stringify(allCols));
+                          }}
+                          className="text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
+                        >
+                          Select all
+                        </button>
+                        <button
+                          onClick={() => {
+                            setSelectedExportColumns([]);
+                            if (selectedTable) localStorage.setItem(exportColumnsStorageKey(selectedTable.name), JSON.stringify([]));
+                          }}
+                          className="text-slate-500 hover:underline cursor-pointer"
+                        >
+                          Clear
+                        </button>
+                      </div>
                     </div>
-                  </button>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1.5 p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+                      {schema.columns.map((col) => (
+                        <label key={col.name} className="flex items-center gap-1.5 text-xs font-mono cursor-pointer select-none text-slate-700 dark:text-slate-300">
+                          <input
+                            type="checkbox"
+                            checked={selectedExportColumns.includes(col.name)}
+                            onChange={() => toggleExportColumn(col.name)}
+                            className="rounded border-slate-300 dark:border-slate-700 text-indigo-600 focus:ring-indigo-500"
+                          />
+                          {col.name}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
-                  {/* JSON Card */}
-                  <button
-                    onClick={() => {
-                      setSelectedExportFormat('json');
-                      let url = `/tables/${encodeURIComponent(selectedTable.name)}/export?format=json`;
-                      if (applyFilterSort && (orderBy || Object.values(filters).some(v => v !== ''))) {
-                        url += `&filtered=true`;
-                        if (orderBy) url += `&orderBy=${encodeURIComponent(orderBy)}`;
-                        if (dir) url += `&dir=${encodeURIComponent(dir)}`;
-                        Object.entries(filters).forEach(([col, val]) => {
-                          if (val !== '') url += `&filter[${encodeURIComponent(col)}]=${encodeURIComponent(val)}`;
-                        });
-                      }
-                      window.location.href = apiUrl(url);
-                    }}
-                    className={`p-4 rounded-lg border text-left transition-all cursor-pointer ${
-                      selectedExportFormat === 'json'
-                        ? 'border-indigo-600 dark:border-indigo-500 bg-indigo-50/30 dark:bg-indigo-950/20 shadow-sm font-medium'
-                        : 'border-slate-205 dark:border-slate-800 hover:border-indigo-400 dark:hover:border-indigo-500/50'
-                    }`}
-                  >
-                    <Braces className="w-6 h-6 text-indigo-500 mb-1" />
-                    <div className="font-medium text-slate-900 dark:text-white">JSON</div>
-                    <div className="text-xs text-slate-400">Array of objects</div>
-                  </button>
-
-                  {/* SQL Card */}
-                  <button
-                    onClick={() => {
-                      setSelectedExportFormat('sql');
-                      let url = `/tables/${encodeURIComponent(selectedTable.name)}/export?format=sql`;
-                      if (applyFilterSort && (orderBy || Object.values(filters).some(v => v !== ''))) {
-                        url += `&filtered=true`;
-                        if (orderBy) url += `&orderBy=${encodeURIComponent(orderBy)}`;
-                        if (dir) url += `&dir=${encodeURIComponent(dir)}`;
-                        Object.entries(filters).forEach(([col, val]) => {
-                          if (val !== '') url += `&filter[${encodeURIComponent(col)}]=${encodeURIComponent(val)}`;
-                        });
-                      }
-                      if (includeSchema) {
-                        url += `&includeSchema=true`;
-                      }
-                      window.location.href = apiUrl(url);
-                    }}
-                    className={`p-4 rounded-lg border text-left transition-all cursor-pointer ${
-                      selectedExportFormat === 'sql'
-                        ? 'border-indigo-600 dark:border-indigo-500 bg-indigo-50/30 dark:bg-indigo-950/20 shadow-sm font-medium'
-                        : 'border-slate-205 dark:border-slate-800 hover:border-indigo-400 dark:hover:border-indigo-500/50'
-                    }`}
-                  >
-                    <Database className="w-6 h-6 text-indigo-500 mb-1" />
-                    <div className="font-medium text-slate-900 dark:text-white">SQL</div>
-                    <div className="text-xs text-slate-400">INSERT statements</div>
-                  </button>
+                <div className="grid sm:grid-cols-3 md:grid-cols-4 gap-3 max-w-2xl">
+                  {EXPORT_FORMATS.map((fmt) => (
+                    <button
+                      key={fmt.id}
+                      onClick={() => {
+                        setSelectedExportFormat(fmt.id);
+                        if (fmt.id === 'xml') {
+                          setXmlExportModalOpen(true);
+                          return;
+                        }
+                        window.location.href = apiUrl(buildExportUrl(fmt.id));
+                      }}
+                      className={`p-4 rounded-lg border text-left transition-all cursor-pointer ${
+                        selectedExportFormat === fmt.id
+                          ? 'border-indigo-600 dark:border-indigo-500 bg-indigo-50/30 dark:bg-indigo-950/20 shadow-sm font-medium'
+                          : 'border-slate-205 dark:border-slate-800 hover:border-indigo-400 dark:hover:border-indigo-500/50'
+                      }`}
+                    >
+                      <FileSpreadsheet className="w-6 h-6 text-indigo-500 mb-1" />
+                      <div className="font-medium text-slate-900 dark:text-white">{fmt.label}</div>
+                      <div className="text-xs text-slate-400 mb-1">{fmt.description}</div>
+                      {fmt.id === 'csv' && (
+                        <div className="text-[10px] text-slate-500 italic mt-2 border-t border-slate-100 dark:border-slate-800/80 pt-1.5">
+                          NULL values export as empty fields.
+                        </div>
+                      )}
+                    </button>
+                  ))}
                 </div>
 
                 {/* Toggles */}
@@ -3496,6 +3742,18 @@ export default function App() {
                     <span>Include CREATE TABLE statement</span>
                   </label>
                 </div>
+
+                {xmlExportModalOpen && selectedTable && (
+                  <XmlExportModal
+                    initial={loadXmlExportOptions(selectedTable.name)}
+                    onCancel={() => setXmlExportModalOpen(false)}
+                    onConfirm={(opts) => {
+                      localStorage.setItem(xmlExportOptionsStorageKey(selectedTable.name), JSON.stringify(opts));
+                      setXmlExportModalOpen(false);
+                      window.location.href = apiUrl(buildExportUrl('xml', opts));
+                    }}
+                  />
+                )}
               </section>
             )}
 
@@ -3826,6 +4084,53 @@ export default function App() {
         />
       )}
 
+      {dropIndexConfirmation && (
+        <ConfirmModal
+          title="Confirm Drop Index"
+          destructive
+          confirmLabel="Drop Index"
+          body={<>Are you sure you want to drop index <span className="font-semibold font-mono text-indigo-650 dark:text-indigo-400">"{dropIndexConfirmation.name}"</span>? This action cannot be undone.</>}
+          onCancel={() => setDropIndexConfirmation(null)}
+          onConfirm={() => {
+            executeDropIndex(dropIndexConfirmation);
+            setDropIndexConfirmation(null);
+          }}
+        />
+      )}
+
+      {dropTriggerConfirmation && (
+        <ConfirmModal
+          title="Confirm Drop Trigger"
+          destructive
+          confirmLabel="Drop Trigger"
+          body={<>Are you sure you want to drop trigger <span className="font-semibold font-mono text-indigo-650 dark:text-indigo-400">"{dropTriggerConfirmation.name}"</span>? This action cannot be undone.</>}
+          onCancel={() => setDropTriggerConfirmation(null)}
+          onConfirm={() => {
+            executeDropTrigger(dropTriggerConfirmation);
+            setDropTriggerConfirmation(null);
+          }}
+        />
+      )}
+
+      {importModalOpen && isWrite && (
+        <ImportModal
+          tables={tables.filter(t => t.type === 'table')}
+          defaultTableName={selectedTable?.name}
+          onClose={() => setImportModalOpen(false)}
+          onToast={(message, type) => showToast(message, type)}
+          onImported={(tableName) => {
+            setImportModalOpen(false);
+            fetchMetaAndTables();
+            if (selectedTable?.name === tableName) {
+              setRefetchTrigger(prev => prev + 1);
+            } else {
+              setSelectedTable({ name: tableName, type: 'table', rowCount: 0 });
+              setActiveTab('data');
+            }
+          }}
+        />
+      )}
+
       {/* TOAST SYSTEM */}
       {toast && (
         <div className="fixed bottom-4 right-4 z-50 animate-bounce">
@@ -3838,53 +4143,6 @@ export default function App() {
               <Check className="w-4 h-4 text-white shrink-0" />
             )}
             <span>{toast.message}</span>
-          </div>
-        </div>
-      )}
-
-      {/* DELETE CONFIRMATION MODAL */}
-      {deleteConfirmation && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-          onClick={() => setDeleteConfirmation(null)}
-        >
-          <div
-            className="w-full max-w-sm rounded-lg border border-slate-205 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
-              <h3 className="font-semibold text-slate-900 dark:text-white flex items-center gap-1.5">
-                <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" /> Confirm Delete
-              </h3>
-              <button
-                onClick={() => setDeleteConfirmation(null)}
-                className="text-slate-400 hover:text-slate-500 dark:hover:text-slate-300"
-              >
-                ✕
-              </button>
-            </div>
-            <div className="p-4 space-y-4">
-              <p className="text-sm text-slate-650 dark:text-slate-350 font-sans">
-                Are you sure you want to delete this row? This action is permanent and cannot be undone.
-              </p>
-              <div className="flex justify-end gap-2">
-                <button
-                  onClick={() => setDeleteConfirmation(null)}
-                  className="px-3 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-850 cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={() => {
-                    executeDeleteRow(deleteConfirmation.row, deleteConfirmation.rIdx);
-                    setDeleteConfirmation(null);
-                  }}
-                  className="px-3 py-1.5 rounded-md bg-red-600 hover:bg-red-500 text-white text-xs font-semibold shadow cursor-pointer"
-                >
-                  Delete
-                </button>
-              </div>
-            </div>
           </div>
         </div>
       )}

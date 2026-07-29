@@ -30,6 +30,11 @@ func (s *Server) WriteGateMiddleware(op string) gin.HandlerFunc {
 }
 
 // POST /api/ddl
+//
+// Dropping an index or trigger from the Schema tab is intentionally routed
+// through this general DDL path (`DROP INDEX "<name>"` / `DROP TRIGGER
+// "<name>"`) rather than duplicated as bespoke table-CRUD-style endpoints —
+// there's no row/schema state to resolve beyond executing the statement.
 type DDLRequest struct {
 	SQL string `json:"sql" binding:"required"`
 }
@@ -1441,6 +1446,37 @@ type DeleteRowRequest struct {
 	Key map[string]interface{} `json:"key" binding:"required"`
 }
 
+// buildRowWhereClause builds the parameterized WHERE clause used to address
+// a single row by its primary key (or "rowid" for rowid tables with no
+// explicit PK), mirroring the key-resolution rules used across row
+// update/delete. Returns useRowid=true when the "rowid" fallback was used.
+func buildRowWhereClause(schema *db.TableSchema, key map[string]interface{}) (whereSQL string, args []interface{}, useRowid bool, err error) {
+	var whereParts []string
+
+	if len(schema.PrimaryKey) == 0 && !schema.WithoutRowid {
+		// Normal rowid table with no explicit PK -> require rowid
+		rowidVal, ok := key["rowid"]
+		if !ok {
+			return "", nil, false, fmt.Errorf("table has no primary key; key must specify 'rowid'")
+		}
+		whereParts = append(whereParts, "rowid = ?")
+		args = append(args, rowidVal)
+		useRowid = true
+	} else {
+		// Check that ALL PK columns are present in the key
+		for _, pkCol := range schema.PrimaryKey {
+			val, ok := key[pkCol]
+			if !ok {
+				return "", nil, false, fmt.Errorf("missing primary key column %q in delete key", pkCol)
+			}
+			whereParts = append(whereParts, fmt.Sprintf("%s = ?", db.QuoteIdentifier(pkCol)))
+			args = append(args, val)
+		}
+	}
+
+	return strings.Join(whereParts, " AND "), args, useRowid, nil
+}
+
 func (s *Server) handleDeleteRow(c *gin.Context) {
 	name := c.Param("name")
 
@@ -1477,39 +1513,15 @@ func (s *Server) handleDeleteRow(c *gin.Context) {
 		return
 	}
 
-	// Validate key requirements
-	var whereParts []string
-	var args []interface{}
-	useRowid := false
-
-	if len(schema.PrimaryKey) == 0 && !schema.WithoutRowid {
-		// Normal rowid table with no explicit PK -> require rowid
-		rowidVal, ok := req.Key["rowid"]
-		if !ok {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"ok":    false,
-				"error": gin.H{"code": "BAD_REQUEST", "message": "table has no primary key; key must specify 'rowid'"},
-			})
-			return
-		}
-		whereParts = append(whereParts, "rowid = ?")
-		args = append(args, rowidVal)
-		useRowid = true
-	} else {
-		// Check that ALL PK columns are present in the key
-		for _, pkCol := range schema.PrimaryKey {
-			val, ok := req.Key[pkCol]
-			if !ok {
-				c.JSON(http.StatusBadRequest, gin.H{
-					"ok":    false,
-					"error": gin.H{"code": "BAD_REQUEST", "message": fmt.Sprintf("missing primary key column %q in delete key", pkCol)},
-				})
-				return
-			}
-			whereParts = append(whereParts, fmt.Sprintf("%s = ?", db.QuoteIdentifier(pkCol)))
-			args = append(args, val)
-		}
+	whereClause, args, useRowid, err := buildRowWhereClause(schema, req.Key)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"ok":    false,
+			"error": gin.H{"code": "BAD_REQUEST", "message": err.Error()},
+		})
+		return
 	}
+	whereParts := []string{whereClause}
 
 	// Begin transaction
 	tx, err := s.db.Begin()
@@ -1573,5 +1585,132 @@ func (s *Server) handleDeleteRow(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"ok":   true,
 		"data": gin.H{"rowsAffected": 1, "useRowid": useRowid},
+	})
+}
+
+// POST /api/tables/:name/rows/bulk-delete
+type BulkDeleteRowsRequest struct {
+	Keys []map[string]interface{} `json:"keys" binding:"required"`
+}
+
+// handleBulkDeleteRows deletes a set of rows, identified by their PK/rowid
+// keys, in a single transaction. Any key that fails to resolve to exactly
+// one row (missing key column, no match, or an ambiguous match) aborts the
+// whole batch — nothing is deleted — matching the same all-or-nothing
+// discipline as the single-row delete's count-check-before-delete guard.
+func (s *Server) handleBulkDeleteRows(c *gin.Context) {
+	name := c.Param("name")
+
+	schema, err := db.GetTableSchema(s.db, name)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"ok":    false,
+				"error": gin.H{"code": "NOT_FOUND", "message": "table or view not found"},
+			})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"ok":    false,
+			"error": gin.H{"code": "DB_ERROR", "message": err.Error()},
+		})
+		return
+	}
+
+	var req BulkDeleteRowsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"ok":    false,
+			"error": gin.H{"code": "BAD_REQUEST", "message": err.Error()},
+		})
+		return
+	}
+
+	if len(req.Keys) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"ok":    false,
+			"error": gin.H{"code": "BAD_REQUEST", "message": "keys is required and must be non-empty"},
+		})
+		return
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"ok":    false,
+			"error": gin.H{"code": "DB_ERROR", "message": err.Error()},
+		})
+		return
+	}
+	defer tx.Rollback()
+
+	var deleted int64
+	for idx, key := range req.Keys {
+		if len(key) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"ok":    false,
+				"error": gin.H{"code": "BAD_REQUEST", "message": fmt.Sprintf("keys[%d]: key is required", idx)},
+			})
+			return
+		}
+
+		whereClause, args, _, err := buildRowWhereClause(schema, key)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"ok":    false,
+				"error": gin.H{"code": "BAD_REQUEST", "message": fmt.Sprintf("keys[%d]: %s", idx, err.Error())},
+			})
+			return
+		}
+
+		countQuery := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s",
+			db.QuoteIdentifier(name), whereClause)
+		var count int
+		if err := tx.QueryRow(countQuery, args...).Scan(&count); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"ok":    false,
+				"error": gin.H{"code": "SQL_ERROR", "message": err.Error()},
+			})
+			return
+		}
+
+		if count == 0 {
+			c.JSON(http.StatusNotFound, gin.H{
+				"ok":    false,
+				"error": gin.H{"code": "NOT_FOUND", "message": fmt.Sprintf("keys[%d]: row not found", idx)},
+			})
+			return
+		}
+		if count > 1 {
+			c.JSON(http.StatusConflict, gin.H{
+				"ok":    false,
+				"error": gin.H{"code": "AMBIGUOUS_KEY", "message": fmt.Sprintf("keys[%d]: delete matches multiple rows", idx)},
+			})
+			return
+		}
+
+		deleteSQL := fmt.Sprintf("DELETE FROM %s WHERE %s",
+			db.QuoteIdentifier(name), whereClause)
+		if _, err := tx.Exec(deleteSQL, args...); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"ok":    false,
+				"error": gin.H{"code": "SQL_ERROR", "message": err.Error()},
+			})
+			return
+		}
+		deleted++
+	}
+
+	if err := tx.Commit(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"ok":    false,
+			"error": gin.H{"code": "DB_ERROR", "message": err.Error()},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"ok":   true,
+		"data": gin.H{"deleted": deleted},
 	})
 }

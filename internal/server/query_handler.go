@@ -19,13 +19,15 @@ type QueryRequest struct {
 }
 
 type QueryResponseData struct {
-	Columns       []string `json:"columns"`
-	Rows          [][]any  `json:"rows"`
-	RowsAffected  int64    `json:"rowsAffected"`
-	DurationMs    float64  `json:"durationMs"`
-	Limit         int      `json:"limit"`
-	Truncated     bool     `json:"truncated"`
-	SchemaChanged bool     `json:"schemaChanged"`
+	Columns           []string `json:"columns"`
+	Rows              [][]any  `json:"rows"`
+	RowsAffected      int64    `json:"rowsAffected"`
+	DurationMs        float64  `json:"durationMs"`
+	Limit             int      `json:"limit"`
+	Truncated         bool     `json:"truncated"`
+	SchemaChanged     bool     `json:"schemaChanged"`
+	SourceTable       string   `json:"sourceTable,omitempty"`
+	PrimaryKeyColumns []string `json:"primaryKeyColumns,omitempty"`
 }
 
 // schemaChangingKeywords are the statement keywords that alter the set of
@@ -159,12 +161,14 @@ func (s *Server) handleQuery(c *gin.Context) {
 
 	// Setup execution
 	var (
-		cols          []string
-		resultRows    [][]any
-		rowsAffected  int64
-		truncated     bool
-		execDuration  float64
-		schemaChanged bool
+		cols              []string
+		resultRows        [][]any
+		rowsAffected      int64
+		truncated         bool
+		execDuration      float64
+		schemaChanged     bool
+		sourceTable       string
+		primaryKeyColumns []string
 	)
 
 	// If we are running write mode queries or multiple statements, run inside a single transaction
@@ -283,6 +287,13 @@ func (s *Server) handleQuery(c *gin.Context) {
 		}
 
 		execDuration = float64(time.Since(startTime).Nanoseconds()) / 1e6
+
+		if table, pkCols, ok := db.AnalyzeSelect(stmt, func(name string) (*db.TableSchema, error) {
+			return db.GetTableSchema(s.db, name)
+		}); ok {
+			sourceTable = table
+			primaryKeyColumns = pkCols
+		}
 	}
 
 	if cols == nil {
@@ -295,13 +306,15 @@ func (s *Server) handleQuery(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"ok": true,
 		"data": QueryResponseData{
-			Columns:       cols,
-			Rows:          resultRows,
-			RowsAffected:  rowsAffected,
-			DurationMs:    execDuration,
-			Limit:         limit,
-			Truncated:     truncated,
-			SchemaChanged: schemaChanged,
+			Columns:           cols,
+			Rows:              resultRows,
+			RowsAffected:      rowsAffected,
+			DurationMs:        execDuration,
+			Limit:             limit,
+			Truncated:         truncated,
+			SchemaChanged:     schemaChanged,
+			SourceTable:       sourceTable,
+			PrimaryKeyColumns: primaryKeyColumns,
 		},
 	})
 }
