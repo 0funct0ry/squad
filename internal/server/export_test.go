@@ -360,6 +360,62 @@ func TestServerQueryExport(t *testing.T) {
 		}
 	})
 
+	t.Run("Query Export Column Labels Rename Headers", func(t *testing.T) {
+		body := `{"sql": "SELECT id, name FROM items ORDER BY id ASC", "columnLabels": ["item_id", "item_name"]}`
+		req := httptest.NewRequest("POST", "/api/export/query?format=csv", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(resp, req)
+
+		if resp.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
+		}
+		expected := "item_id,item_name\n1,item1\n2,item2\n"
+		if resp.Body.String() != expected {
+			t.Errorf("expected body %q, got %q", expected, resp.Body.String())
+		}
+	})
+
+	t.Run("Query Export Column Labels Applied After Projection", func(t *testing.T) {
+		body := `{"sql": "SELECT id, name FROM items ORDER BY id ASC", "columnLabels": ["item_name"]}`
+		req := httptest.NewRequest("POST", "/api/export/query?format=csv&columns=name", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(resp, req)
+
+		if resp.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
+		}
+		expected := "item_name\nitem1\nitem2\n"
+		if resp.Body.String() != expected {
+			t.Errorf("expected body %q, got %q", expected, resp.Body.String())
+		}
+	})
+
+	t.Run("Query Export Rejects Mismatched Column Labels Count", func(t *testing.T) {
+		body := `{"sql": "SELECT id, name FROM items", "columnLabels": ["only_one"]}`
+		req := httptest.NewRequest("POST", "/api/export/query?format=csv", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(resp, req)
+
+		if resp.Code != http.StatusBadRequest {
+			t.Errorf("expected 400, got %d", resp.Code)
+		}
+	})
+
+	t.Run("Query Export Rejects Duplicate Column Labels", func(t *testing.T) {
+		body := `{"sql": "SELECT id, name FROM items", "columnLabels": ["dup", "dup"]}`
+		req := httptest.NewRequest("POST", "/api/export/query?format=csv", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(resp, req)
+
+		if resp.Code != http.StatusBadRequest {
+			t.Errorf("expected 400, got %d", resp.Code)
+		}
+	})
+
 	t.Run("Query Export New Formats Succeed", func(t *testing.T) {
 		formats := []string{"yaml", "xml", "toml", "bson", "protobuf", "xlsx", "parquet"}
 		for _, format := range formats {

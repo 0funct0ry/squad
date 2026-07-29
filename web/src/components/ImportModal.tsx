@@ -68,6 +68,7 @@ export default function ImportModal({ tables, defaultTableName, onClose, onToast
   const [newTableName, setNewTableName] = useState<string>('');
   const [newColumns, setNewColumns] = useState<InferredColumn[]>([]);
   const [newColumnsEdited, setNewColumnsEdited] = useState(false);
+  const [newTablePrimaryKey, setNewTablePrimaryKey] = useState<Set<number>>(new Set());
 
   const [submitting, setSubmitting] = useState(false);
 
@@ -104,6 +105,7 @@ export default function ImportModal({ tables, defaultTableName, onClose, onToast
       setPreview(body.data);
       setNewColumns(body.data.inferredColumns || []);
       setNewColumnsEdited(false);
+      setNewTablePrimaryKey(new Set());
       // Default mapping: match file columns to target columns by name (case-insensitive), else skip.
       if (targetSchema) {
         const next: Record<string, string> = {};
@@ -169,6 +171,15 @@ export default function ImportModal({ tables, defaultTableName, onClose, onToast
     setNewColumns((prev) => prev.map((c, i) => (i === idx ? { ...c, [field]: value } : c)));
   };
 
+  const toggleNewTablePrimaryKey = (idx: number) => {
+    setNewTablePrimaryKey((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
+  };
+
   const handleImportIntoExisting = async () => {
     if (!file || !targetTable) return;
     setSubmitting(true);
@@ -208,6 +219,12 @@ export default function ImportModal({ tables, defaultTableName, onClose, onToast
       form.append('name', newTableName.trim());
       if (newColumnsEdited) {
         form.append('columns', JSON.stringify(newColumns));
+      }
+      if (newTablePrimaryKey.size > 0) {
+        const pkNames = Array.from(newTablePrimaryKey)
+          .sort((a, b) => a - b)
+          .map((idx) => newColumns[idx].name);
+        form.append('primaryKey', JSON.stringify(pkNames));
       }
       const res = await fetch(apiUrl('/tables/import'), { method: 'POST', body: form });
       const body = await res.json();
@@ -479,12 +496,17 @@ export default function ImportModal({ tables, defaultTableName, onClose, onToast
                     />
                   </div>
 
+                  <p className="text-[11px] text-slate-400">
+                    Optionally check one or more columns to use as the table's primary key.
+                  </p>
+
                   <div className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden">
                     <table className="w-full text-xs">
                       <thead className="bg-slate-50 dark:bg-slate-800/40 text-slate-500 text-left">
                         <tr>
                           <th className="px-3 py-1.5 font-medium">Column name</th>
                           <th className="px-3 py-1.5 font-medium">Type</th>
+                          <th className="px-3 py-1.5 font-medium text-center">Primary key</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-mono">
@@ -505,6 +527,14 @@ export default function ImportModal({ tables, defaultTableName, onClose, onToast
                                 value={col.type}
                                 onChange={(e) => handleNewColumnChange(idx, 'type', e.target.value)}
                                 className="bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded px-1.5 py-0.5 text-xs w-full"
+                              />
+                            </td>
+                            <td className="px-3 py-1.5 text-center">
+                              <input
+                                type="checkbox"
+                                checked={newTablePrimaryKey.has(idx)}
+                                onChange={() => toggleNewTablePrimaryKey(idx)}
+                                className="rounded border-slate-300 dark:border-slate-700 text-indigo-600 focus:ring-indigo-500"
                               />
                             </td>
                           </tr>

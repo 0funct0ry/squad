@@ -15,6 +15,12 @@ import (
 
 type QueryExportRequest struct {
 	SQL string `json:"sql" binding:"required"`
+	// ColumnLabels optionally renames the exported header/JSON-key for each
+	// column, positionally matching the final column list (i.e. after any
+	// columns= subset/reorder is applied). Useful when the query's own
+	// column names are raw, unaliased SQL expressions (e.g.
+	// "concat(first_name,' ',last_name)") rather than simple identifiers.
+	ColumnLabels []string `json:"columnLabels"`
 }
 
 // tableExportFormats are the formats accepted by GET /tables/:name/export.
@@ -461,6 +467,38 @@ func (s *Server) handleQueryExport(c *gin.Context) {
 			return
 		}
 		source, cols = projected, projectedCols
+	}
+
+	// Optional column relabeling: lets the caller override the exported
+	// header/JSON-key names (e.g. when the query's own columns are raw,
+	// unaliased expressions), positionally matched to the final column list.
+	if len(req.ColumnLabels) > 0 {
+		if len(req.ColumnLabels) != len(cols) {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"ok":    false,
+				"error": gin.H{"code": "VALIDATION", "message": fmt.Sprintf("columnLabels must have exactly %d entries (one per exported column)", len(cols))},
+			})
+			return
+		}
+		seen := make(map[string]bool, len(req.ColumnLabels))
+		for _, label := range req.ColumnLabels {
+			if strings.TrimSpace(label) == "" {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"ok":    false,
+					"error": gin.H{"code": "VALIDATION", "message": "columnLabels entries cannot be empty"},
+				})
+				return
+			}
+			if seen[label] {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"ok":    false,
+					"error": gin.H{"code": "VALIDATION", "message": fmt.Sprintf("duplicate columnLabels entry %q", label)},
+				})
+				return
+			}
+			seen[label] = true
+		}
+		cols = req.ColumnLabels
 	}
 
 	filename := fmt.Sprintf("query-export.%s", format)

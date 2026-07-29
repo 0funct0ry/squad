@@ -208,6 +208,77 @@ func TestImportCreateTableHandler(t *testing.T) {
 		}
 	})
 
+	t.Run("creates table with a designated primary key", func(t *testing.T) {
+		csvContent := "sku,name\nABC-1,widget\nABC-2,gadget\n"
+		req := buildMultipartRequest(t, "POST", "/api/tables/import", csvContent, map[string]string{
+			"format":     "csv",
+			"name":       "skus",
+			"primaryKey": `["sku"]`,
+		})
+		resp := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(resp, req)
+
+		if resp.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
+		}
+
+		schema, err := db.GetTableSchema(database, "skus")
+		if err != nil {
+			t.Fatalf("failed to fetch schema: %v", err)
+		}
+		if len(schema.PrimaryKey) != 1 || schema.PrimaryKey[0] != "sku" {
+			t.Errorf("expected primary key [sku], got %v", schema.PrimaryKey)
+		}
+
+		// A duplicate sku must now violate the primary key.
+		_, err = database.Exec(`INSERT INTO skus (sku, name) VALUES ('ABC-1', 'dup')`)
+		if err == nil {
+			t.Error("expected inserting a duplicate sku to fail")
+		}
+	})
+
+	t.Run("creates table with a composite primary key", func(t *testing.T) {
+		csvContent := "region,sku,name\nUK,ABC-1,widget\nUS,ABC-1,widget-us\n"
+		req := buildMultipartRequest(t, "POST", "/api/tables/import", csvContent, map[string]string{
+			"format":     "csv",
+			"name":       "regional_skus",
+			"primaryKey": `["region","sku"]`,
+		})
+		resp := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(resp, req)
+
+		if resp.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
+		}
+
+		schema, err := db.GetTableSchema(database, "regional_skus")
+		if err != nil {
+			t.Fatalf("failed to fetch schema: %v", err)
+		}
+		if len(schema.PrimaryKey) != 2 {
+			t.Errorf("expected a 2-column composite primary key, got %v", schema.PrimaryKey)
+		}
+	})
+
+	t.Run("rejects primaryKey column not present among the table's columns", func(t *testing.T) {
+		req := buildMultipartRequest(t, "POST", "/api/tables/import", "id\n1\n", map[string]string{
+			"format":     "csv",
+			"name":       "bad_pk_table",
+			"primaryKey": `["bogus"]`,
+		})
+		resp := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(resp, req)
+
+		if resp.Code != http.StatusBadRequest {
+			t.Errorf("expected 400, got %d: %s", resp.Code, resp.Body.String())
+		}
+		var exists bool
+		database.QueryRow("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = 'bad_pk_table')").Scan(&exists)
+		if exists {
+			t.Error("expected bad_pk_table to not exist after rejected primaryKey")
+		}
+	})
+
 	t.Run("rejects existing table name", func(t *testing.T) {
 		req := buildMultipartRequest(t, "POST", "/api/tables/import", "id\n1\n", map[string]string{
 			"format": "csv",

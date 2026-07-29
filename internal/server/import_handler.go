@@ -362,11 +362,56 @@ func (s *Server) handleImportCreateTable(c *gin.Context) {
 		return
 	}
 
+	// Optional primary key: a JSON array of column names (matched against
+	// the final, possibly-overridden spec names), rendered as a table-level
+	// PRIMARY KEY (...) constraint so both single and composite keys work
+	// the same way.
+	var primaryKey []string
+	if pkRaw := c.PostForm("primaryKey"); strings.TrimSpace(pkRaw) != "" {
+		if err := json.Unmarshal([]byte(pkRaw), &primaryKey); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"ok":    false,
+				"error": gin.H{"code": "BAD_REQUEST", "message": fmt.Sprintf("invalid primaryKey JSON: %s", err.Error())},
+			})
+			return
+		}
+		specNames := make(map[string]bool, len(specs))
+		for _, spec := range specs {
+			specNames[strings.ToLower(spec.Name)] = true
+		}
+		seenPK := make(map[string]bool, len(primaryKey))
+		for _, pkCol := range primaryKey {
+			lower := strings.ToLower(pkCol)
+			if !specNames[lower] {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"ok":    false,
+					"error": gin.H{"code": "BAD_REQUEST", "message": fmt.Sprintf("primaryKey column %q not found among the table's columns", pkCol)},
+				})
+				return
+			}
+			if seenPK[lower] {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"ok":    false,
+					"error": gin.H{"code": "BAD_REQUEST", "message": fmt.Sprintf("duplicate primaryKey column %q", pkCol)},
+				})
+				return
+			}
+			seenPK[lower] = true
+		}
+	}
+
 	colDefs := make([]string, len(specs))
 	targetColumns := make([]string, len(specs))
 	for i, spec := range specs {
 		colDefs[i] = fmt.Sprintf("%s %s", db.QuoteIdentifier(spec.Name), spec.Type)
 		targetColumns[i] = spec.Name
+	}
+	if len(primaryKey) > 0 {
+		quoted := make([]string, len(primaryKey))
+		for i, pkCol := range primaryKey {
+			quoted[i] = db.QuoteIdentifier(pkCol)
+		}
+		colDefs = append(colDefs, fmt.Sprintf("PRIMARY KEY (%s)", strings.Join(quoted, ", ")))
 	}
 	createDDL := fmt.Sprintf("CREATE TABLE %s (%s)", db.QuoteIdentifier(tableName), strings.Join(colDefs, ", "))
 

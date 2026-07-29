@@ -42,6 +42,7 @@ import RestTab from './components/RestTab';
 import RowGrid from './components/RowGrid';
 import ImportModal from './components/ImportModal';
 import XmlExportModal, { defaultXmlExportOptions, type XmlExportOptions } from './components/XmlExportModal';
+import ExportFieldNamesModal, { isCleanIdentifier } from './components/ExportFieldNamesModal';
 import { apiFetch, apiUrl, setApiBase } from './lib/api';
 
 interface MetaData {
@@ -377,11 +378,11 @@ async function runQuery(sql: string, limit?: number): Promise<QueryResult> {
   return body.data;
 }
 
-async function exportQuery(sql: string, format: string): Promise<Blob> {
+async function exportQuery(sql: string, format: string, columnLabels?: string[]): Promise<Blob> {
   const res = await apiFetch(`/export/query?format=${format}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sql }),
+    body: JSON.stringify(columnLabels ? { sql, columnLabels } : { sql }),
   });
   if (!res.ok) {
     let errBody;
@@ -983,11 +984,13 @@ export default function App() {
     handleExecuteQuery(sqlToRun);
   };
 
-  const handleQueryExport = async (format: 'csv' | 'json') => {
+  const [pendingQueryExportFormat, setPendingQueryExportFormat] = useState<'csv' | 'json' | null>(null);
+
+  const runQueryExport = async (format: 'csv' | 'json', columnLabels?: string[]) => {
     if (!lastExecutedSql) return;
     setExportQueryLoading(true);
     try {
-      const blob = await exportQuery(lastExecutedSql, format);
+      const blob = await exportQuery(lastExecutedSql, format, columnLabels);
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -1003,6 +1006,19 @@ export default function App() {
     } finally {
       setExportQueryLoading(false);
     }
+  };
+
+  const handleQueryExport = async (format: 'csv' | 'json') => {
+    if (!lastExecutedSql) return;
+    // When the query's own column names aren't simple identifiers (e.g. a
+    // raw, unaliased expression like a multi-line format(...) call), ask
+    // the user for cleaner export field names first rather than shipping
+    // a CSV header / JSON key that's a verbatim SQL expression.
+    if (queryResult && queryResult.columns.some((c) => !isCleanIdentifier(c))) {
+      setPendingQueryExportFormat(format);
+      return;
+    }
+    await runQueryExport(format);
   };
 
   const getFkReferencingTables = (tableName: string) => {
@@ -2927,6 +2943,18 @@ export default function App() {
                     </div>
                   </div>
                 </div>
+
+                {pendingQueryExportFormat && queryResult && (
+                  <ExportFieldNamesModal
+                    columns={queryResult.columns}
+                    onCancel={() => setPendingQueryExportFormat(null)}
+                    onConfirm={(labels) => {
+                      const format = pendingQueryExportFormat;
+                      setPendingQueryExportFormat(null);
+                      runQueryExport(format, labels);
+                    }}
+                  />
+                )}
               </section>
             )}
 
