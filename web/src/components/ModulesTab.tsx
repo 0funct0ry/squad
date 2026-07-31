@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   Boxes, FileText, FileJson, Table2, Sheet, FileCode, FileSpreadsheet,
-  Hash, Calendar, Sparkles, SplitSquareHorizontal, Search, Trash2, Eye, Plug, Plus,
+  Hash, Calendar, Sparkles, SplitSquareHorizontal, Search, Trash2, Eye, Plug, Plus, Sliders,
 } from 'lucide-react';
 import { apiFetch } from '../lib/api';
 import ConfirmModal from './ConfirmModal';
+import GeneratorPicker, { type GeneratorMeta } from './GeneratorPicker';
 
 export type OptionKind = 'int' | 'float' | 'bool' | 'string' | 'date' | 'datetime' | 'select' | 'columns' | 'textarea' | 'generator';
 
@@ -89,19 +90,6 @@ function defaultValueFor(field: OptionField): string {
   return '';
 }
 
-// coerceOptionValue converts a fake generator option's string wire value
-// into the JSON type internal/seed's opt*() helpers expect (float64 for
-// int/float, bool for bool, string otherwise) before it's embedded as
-// <generator>:<json> in the column's mount arg.
-function coerceOptionValue(field: OptionField, value: string): unknown {
-  if (field.kind === 'int' || field.kind === 'float') {
-    const n = Number(value);
-    return Number.isNaN(n) ? value : n;
-  }
-  if (field.kind === 'bool') return value === 'true';
-  return value;
-}
-
 const inputClass =
   'w-full text-sm px-2.5 py-1.5 rounded-md bg-slate-100 dark:bg-slate-800 border border-transparent focus:border-indigo-400 outline-none text-slate-950 dark:text-white';
 
@@ -168,20 +156,13 @@ function ArgField({
 // other module and needs its own repeatable-row UI below.
 const FAKE_MODULE_NAME = 'fake';
 
-interface GeneratorMeta {
-  name: string;
-  group: string;
-  description?: string;
-  optionsSchema?: OptionField[];
-}
-
 interface FakeColumn {
   name: string;
   generator: string;
   // Values for the selected generator's own OptionsSchema (e.g. oneOf's
-  // `values`), keyed by option key, all as their string wire form — same
-  // convention as argValues for the module's own args.
-  options: Record<string, string>;
+  // `values`), keyed by option key, already correctly typed per OptionKind
+  // (numbers, booleans, string arrays, etc.) via GeneratorOptionsForm.
+  options: Record<string, unknown>;
 }
 
 export default function ModulesTab({ onToast, onMountsChanged }: ModulesTabProps) {
@@ -193,6 +174,7 @@ export default function ModulesTab({ onToast, onMountsChanged }: ModulesTabProps
   const [alias, setAlias] = useState('');
   const [argValues, setArgValues] = useState<Record<string, string>>({});
   const [fakeColumns, setFakeColumns] = useState<FakeColumn[]>([]);
+  const [pickerColumnIndex, setPickerColumnIndex] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [preview, setPreview] = useState<{ alias: string; columns: string[]; rows: unknown[][] } | null>(null);
   const [unmountConfirm, setUnmountConfirm] = useState<string | null>(null);
@@ -214,11 +196,6 @@ export default function ModulesTab({ onToast, onMountsChanged }: ModulesTabProps
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  const generatorNames = useMemo(
-    () => generatorCatalog.map((g) => g.name).sort(),
-    [generatorCatalog]
-  );
 
   const catalog = info?.catalog ?? [];
 
@@ -280,14 +257,8 @@ export default function ModulesTab({ onToast, onMountsChanged }: ModulesTabProps
         for (const c of fakeColumns) {
           if (!c.name.trim() || !c.generator.trim()) continue;
           const genName = c.generator.trim();
-          const schema = generatorCatalog.find((g) => g.name === genName)?.optionsSchema ?? [];
-          const opts: Record<string, unknown> = {};
-          for (const f of schema) {
-            const v = c.options[f.key];
-            if (v === undefined || v === '') continue;
-            opts[f.key] = coerceOptionValue(f, v);
-          }
-          const value = Object.keys(opts).length > 0 ? `${genName}:${JSON.stringify(opts)}` : genName;
+          const opts = c.options && Object.keys(c.options).length > 0 ? c.options : undefined;
+          const value = opts ? `${genName}:${JSON.stringify(opts)}` : genName;
           args[c.name.trim()] = value;
         }
       }
@@ -503,63 +474,46 @@ export default function ModulesTab({ onToast, onMountsChanged }: ModulesTabProps
                       <span className="text-xs font-medium text-slate-600 dark:text-slate-300">
                         Columns<span className="text-red-500"> *</span>
                       </span>
-                      <datalist id="fake-generator-names">
-                        {generatorNames.map((n) => (
-                          <option key={n} value={n} />
-                        ))}
-                      </datalist>
                       {fakeColumns.map((col, i) => {
-                        const genSchema = generatorCatalog.find((g) => g.name === col.generator.trim())?.optionsSchema ?? [];
+                        const hasOptions = col.generator.trim() && Object.keys(col.options).length > 0;
                         return (
-                          <div key={i} className="space-y-1.5 rounded-md border border-slate-200 dark:border-slate-800 p-2">
-                            <div className="flex items-center gap-1.5">
-                              <input
-                                value={col.name}
-                                placeholder="column name"
-                                onChange={(e) =>
-                                  setFakeColumns((prev) => prev.map((c, j) => (j === i ? { ...c, name: e.target.value } : c)))
-                                }
-                                className={inputClass}
-                              />
-                              <input
-                                value={col.generator}
-                                list="fake-generator-names"
-                                placeholder="generator, e.g. email"
-                                onChange={(e) =>
-                                  setFakeColumns((prev) =>
-                                    prev.map((c, j) => (j === i ? { ...c, generator: e.target.value, options: {} } : c))
-                                  )
-                                }
-                                className={inputClass}
-                              />
-                              <button
-                                onClick={() => setFakeColumns((prev) => prev.filter((_, j) => j !== i))}
-                                disabled={fakeColumns.length === 1}
-                                title="Remove column"
-                                className="p-1.5 rounded-md text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 disabled:opacity-30 disabled:cursor-not-allowed shrink-0"
+                          <div key={i} className="flex items-center gap-1.5">
+                            <input
+                              value={col.name}
+                              placeholder="column name"
+                              onChange={(e) =>
+                                setFakeColumns((prev) => prev.map((c, j) => (j === i ? { ...c, name: e.target.value } : c)))
+                              }
+                              className={`flex-1 min-w-0 ${inputClass}`}
+                            />
+                            {col.generator ? (
+                              <span
+                                title={hasOptions ? `Options: ${JSON.stringify(col.options)}` : undefined}
+                                className="flex-1 min-w-0 flex items-center gap-1 text-sm px-2.5 py-1.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-950 dark:text-white font-mono truncate"
                               >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                            {genSchema.length > 0 && (
-                              <div className="pl-1 space-y-1.5 border-l-2 border-indigo-200 dark:border-indigo-900 ml-1">
-                                <p className="text-xs text-slate-400">
-                                  {col.generator.trim()} needs:
-                                </p>
-                                {genSchema.map((f) => (
-                                  <ArgField
-                                    key={f.key}
-                                    field={f}
-                                    value={col.options[f.key] ?? defaultValueFor(f)}
-                                    onChange={(v) =>
-                                      setFakeColumns((prev) =>
-                                        prev.map((c, j) => (j === i ? { ...c, options: { ...c.options, [f.key]: v } } : c))
-                                      )
-                                    }
-                                  />
-                                ))}
-                              </div>
+                                <span className="truncate">{col.generator}</span>
+                                {hasOptions && <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 shrink-0" />}
+                              </span>
+                            ) : (
+                              <span className="flex-1 min-w-0 text-sm px-2.5 py-1.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-400 truncate">
+                                — choose a generator —
+                              </span>
                             )}
+                            <button
+                              onClick={() => setPickerColumnIndex(i)}
+                              title="Choose generator"
+                              className="p-1.5 rounded-md text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0"
+                            >
+                              <Sliders className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={() => setFakeColumns((prev) => prev.filter((_, j) => j !== i))}
+                              disabled={fakeColumns.length === 1}
+                              title="Remove column"
+                              className="p-1.5 rounded-md text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 disabled:opacity-30 disabled:cursor-not-allowed shrink-0"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
                           </div>
                         );
                       })}
@@ -570,7 +524,7 @@ export default function ModulesTab({ onToast, onMountsChanged }: ModulesTabProps
                         <Plus className="w-3 h-3" /> Add column
                       </button>
                       <p className="text-xs text-slate-400">
-                        Generator names come from the Seed tab's registry (email, firstName, country, …) — start typing for suggestions.
+                        Generator names come from the Seed tab's registry (email, firstName, country, …).
                       </p>
                     </div>
                   )}
@@ -588,6 +542,24 @@ export default function ModulesTab({ onToast, onMountsChanged }: ModulesTabProps
           </div>
         </div>
       </div>
+
+      {pickerColumnIndex !== null && fakeColumns[pickerColumnIndex] && (
+        <GeneratorPicker
+          mode="configure"
+          catalog={generatorCatalog}
+          currentGenerator={fakeColumns[pickerColumnIndex].generator}
+          optionsValues={fakeColumns[pickerColumnIndex].options}
+          targetAffinity="TEXT"
+          defaultShowAllTypes
+          recentlyUsed={[]}
+          onSelect={() => {}}
+          onConfirm={(name, opts) => {
+            const idx = pickerColumnIndex;
+            setFakeColumns((prev) => prev.map((c, j) => (j === idx ? { ...c, generator: name, options: opts } : c)));
+          }}
+          onClose={() => setPickerColumnIndex(null)}
+        />
+      )}
 
       {unmountConfirm && (
         <ConfirmModal

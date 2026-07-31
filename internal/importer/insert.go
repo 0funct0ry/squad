@@ -31,7 +31,7 @@ func BulkInsertRows(tx *sql.Tx, table string, columns []string, rows []map[strin
 		strings.Join(placeholders, ", "),
 	))
 	if err != nil {
-		return 0, fmt.Errorf("failed to prepare insert: %w", err)
+		return 0, fmt.Errorf("failed to prepare insert into %q: %w", table, err)
 	}
 	defer stmt.Close()
 

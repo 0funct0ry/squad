@@ -34,6 +34,10 @@ interface ImportModalProps {
   onClose: () => void;
   onToast: (message: string, type: 'error' | 'success') => void;
   onImported: (tableName: string) => void;
+  // When true (opened from the empty-database state, where there's nothing
+  // to import into yet), lock the modal to "create new table from file" and
+  // hide the "import into existing table" option entirely.
+  forceCreateMode?: boolean;
 }
 
 type Format = 'csv' | 'json' | 'yaml';
@@ -49,7 +53,7 @@ function detectFormat(filename: string): Format | null {
   return null;
 }
 
-export default function ImportModal({ tables, defaultTableName, onClose, onToast, onImported }: ImportModalProps) {
+export default function ImportModal({ tables, defaultTableName, onClose, onToast, onImported, forceCreateMode }: ImportModalProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
@@ -59,7 +63,7 @@ export default function ImportModal({ tables, defaultTableName, onClose, onToast
   const [preview, setPreview] = useState<PreviewData | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
 
-  const [mode, setMode] = useState<Mode>('existing');
+  const [mode, setMode] = useState<Mode>(forceCreateMode ? 'create' : 'existing');
   const [targetTable, setTargetTable] = useState<string>(defaultTableName || '');
   const [targetSchema, setTargetSchema] = useState<ColumnInfo[] | null>(null);
   const [mapping, setMapping] = useState<Record<string, string>>({});
@@ -398,28 +402,36 @@ export default function ImportModal({ tables, defaultTableName, onClose, onToast
               </div>
 
               {/* Mode toggle */}
-              <div className="flex items-center gap-2 border-b border-slate-200 dark:border-slate-800 pb-3">
-                <button
-                  onClick={() => setMode('existing')}
-                  className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
-                    mode === 'existing'
-                      ? 'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-650 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/30'
-                      : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800'
-                  }`}
-                >
-                  Import into existing table
-                </button>
-                <button
-                  onClick={() => setMode('create')}
-                  className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
-                    mode === 'create'
-                      ? 'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-650 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/30'
-                      : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800'
-                  }`}
-                >
-                  Create new table from file
-                </button>
-              </div>
+              {forceCreateMode ? (
+                <div className="border-b border-slate-200 dark:border-slate-800 pb-3">
+                  <span className="px-3 py-1.5 rounded-md text-xs font-medium bg-indigo-50 dark:bg-indigo-500/10 text-indigo-650 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/30">
+                    Create new table from file
+                  </span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 border-b border-slate-200 dark:border-slate-800 pb-3">
+                  <button
+                    onClick={() => setMode('existing')}
+                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+                      mode === 'existing'
+                        ? 'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-650 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/30'
+                        : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800'
+                    }`}
+                  >
+                    Import into existing table
+                  </button>
+                  <button
+                    onClick={() => setMode('create')}
+                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+                      mode === 'create'
+                        ? 'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-650 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/30'
+                        : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800'
+                    }`}
+                  >
+                    Create new table from file
+                  </button>
+                </div>
+              )}
 
               {mode === 'existing' ? (
                 <div className="space-y-3">

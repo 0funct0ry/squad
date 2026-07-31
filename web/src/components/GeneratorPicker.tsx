@@ -26,6 +26,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { sniffBase64, dataUriFromBase64, type BlobMediaType } from '../lib/blobMedia';
+import GeneratorOptionsForm from './GeneratorOptionsForm';
 
 export type OptionKind = 'int' | 'float' | 'bool' | 'string' | 'datetime' | 'select' | 'columns' | 'textarea' | 'generator';
 
@@ -58,6 +59,14 @@ interface GeneratorPickerProps {
   recentlyUsed: string[];
   onSelect: (name: string) => void;
   onClose: () => void;
+  // 'configure' mode (used by the fake-module column modal) keeps the modal
+  // open after a card is picked, shows that generator's own optionsSchema
+  // inline, and commits both name + options together via onConfirm — rather
+  // than closing immediately on select like the default 'pick' mode does.
+  mode?: 'pick' | 'configure';
+  optionsValues?: Record<string, unknown>;
+  onConfirm?: (name: string, options: Record<string, unknown>) => void;
+  defaultShowAllTypes?: boolean;
 }
 
 // Presentation-only mapping of backend group keys -> icon/label. The set of
@@ -243,12 +252,32 @@ export default function GeneratorPicker({
   recentlyUsed,
   onSelect,
   onClose,
+  mode = 'pick',
+  optionsValues,
+  onConfirm,
+  defaultShowAllTypes,
 }: GeneratorPickerProps) {
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState<string | null>(null);
-  const [showAllTypes, setShowAllTypes] = useState(false);
+  const [showAllTypes, setShowAllTypes] = useState(!!defaultShowAllTypes);
   const [highlightIndex, setHighlightIndex] = useState(0);
+  const [pendingName, setPendingName] = useState(mode === 'configure' ? currentGenerator : '');
+  const [pendingOptions, setPendingOptions] = useState<Record<string, unknown>>(optionsValues || {});
   const searchRef = useRef<HTMLInputElement | null>(null);
+
+  const pendingMeta = mode === 'configure' ? catalog.find((g) => g.name === pendingName) : undefined;
+
+  const choose = (name: string) => {
+    if (mode === 'configure') {
+      setPendingName((prev) => {
+        if (prev !== name) setPendingOptions({});
+        return name;
+      });
+      return;
+    }
+    onSelect(name);
+    onClose();
+  };
 
   useEffect(() => {
     searchRef.current?.focus();
@@ -312,10 +341,7 @@ export default function GeneratorPicker({
     } else if (e.key === 'Enter') {
       e.preventDefault();
       const target = displayList[highlightIndex];
-      if (target) {
-        onSelect(target.name);
-        onClose();
-      }
+      if (target) choose(target.name);
     } else if (e.key === 'Escape') {
       e.preventDefault();
       onClose();
@@ -415,12 +441,9 @@ export default function GeneratorPicker({
                 <GeneratorCard
                   key={gen.name}
                   gen={gen}
-                  highlighted={i === highlightIndex}
+                  highlighted={i === highlightIndex || (mode === 'configure' && gen.name === pendingName)}
                   targetAffinity={targetAffinity}
-                  onSelect={() => {
-                    onSelect(gen.name);
-                    onClose();
-                  }}
+                  onSelect={() => choose(gen.name)}
                   onHighlight={() => setHighlightIndex(i)}
                   cardRef={(el) => (cardRefs.current[i] = el)}
                 />
@@ -428,6 +451,32 @@ export default function GeneratorPicker({
             </div>
           </div>
         </div>
+
+        {mode === 'configure' && pendingName && (
+          <div className="px-4 py-3 border-t border-slate-200 dark:border-slate-800 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-mono text-sm font-medium text-slate-900 dark:text-white">{pendingName}</span>
+              <button
+                onClick={() => {
+                  onConfirm?.(pendingName, pendingOptions);
+                  onClose();
+                }}
+                className="px-3 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium"
+              >
+                Apply
+              </button>
+            </div>
+            {pendingMeta && (pendingMeta.optionsSchema || []).length > 0 && (
+              <GeneratorOptionsForm
+                schema={pendingMeta.optionsSchema || []}
+                values={pendingOptions}
+                onChange={(key, v) => setPendingOptions((prev) => ({ ...prev, [key]: v }))}
+                catalog={catalog}
+                affinity={targetAffinity}
+              />
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

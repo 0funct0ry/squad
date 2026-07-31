@@ -121,7 +121,7 @@ func parseGeneratorSpec(spec string) (string, map[string]any, error) {
 	}
 	var opts map[string]any
 	if err := json.Unmarshal([]byte(rawOpts), &opts); err != nil {
-		return "", nil, fmt.Errorf("invalid options JSON after generator %q: %w", name, err)
+		return "", nil, fmt.Errorf("options for %q must be valid JSON: %w", name, err)
 	}
 	return name, opts, nil
 }

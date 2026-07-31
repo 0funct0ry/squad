@@ -1,6 +1,7 @@
 package server
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -346,18 +347,40 @@ func (s *Server) handleImportCreateTable(c *gin.Context) {
 		seen[lower] = true
 	}
 
-	var exists bool
-	if err := s.db.QueryRow("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = ?)", tableName).Scan(&exists); err != nil {
+	// Mounted virtual tables live in the temp schema, not main, so this has
+	// to search both - an unqualified "sqlite_master" lookup (as used
+	// previously) only ever resolves to main.sqlite_master and would miss a
+	// name collision with a mount. Missing that collision here doesn't just
+	// mean a worse error message: CREATE TABLE would still succeed (SQLite
+	// allows same-named objects in different schemas), but temp objects
+	// shadow main ones for unqualified access, so every subsequent insert
+	// against tableName would silently hit the mount's virtual table
+	// instead of the table just created, surfacing a confusing low-level
+	// "no column named X" error instead of this clear one.
+	var existingType string
+	err = s.db.QueryRow(
+		`SELECT type FROM (
+			SELECT type, name FROM sqlite_master
+			UNION ALL
+			SELECT type, name FROM temp.sqlite_master
+		) WHERE type IN ('table', 'view') AND name = ?`,
+		tableName,
+	).Scan(&existingType)
+	if err != nil && err != sql.ErrNoRows {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"ok":    false,
 			"error": gin.H{"code": "DB_ERROR", "message": err.Error()},
 		})
 		return
 	}
-	if exists {
+	if err == nil {
+		kind := existingType
+		if kind == "" {
+			kind = "object"
+		}
 		c.JSON(http.StatusConflict, gin.H{
 			"ok":    false,
-			"error": gin.H{"code": "ALREADY_EXISTS", "message": fmt.Sprintf("table or view %q already exists", tableName)},
+			"error": gin.H{"code": "ALREADY_EXISTS", "message": fmt.Sprintf("a %s named %q already exists - pick a different name, or use \"Import into existing table\" instead", kind, tableName)},
 		})
 		return
 	}

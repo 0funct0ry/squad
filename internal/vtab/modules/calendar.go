@@ -90,20 +90,20 @@ func parseStepDays(s string) (int, error) {
 	case 1:
 		n, err := strconv.Atoi(fields[0])
 		if err != nil {
-			return 0, fmt.Errorf("invalid step %q", s)
+			return 0, fmt.Errorf("step %q must be an integer or \"<N> days\" (e.g. step=1 or step=\"7 days\")", s)
 		}
 		return n, nil
 	case 2:
 		n, err := strconv.Atoi(fields[0])
 		if err != nil {
-			return 0, fmt.Errorf("invalid step %q", s)
+			return 0, fmt.Errorf("step %q must be an integer or \"<N> days\" (e.g. step=1 or step=\"7 days\")", s)
 		}
 		unit := strings.ToLower(strings.TrimSuffix(fields[1], "s"))
 		if unit != "day" {
-			return 0, fmt.Errorf("unsupported step unit %q (only day/days supported)", fields[1])
+			return 0, fmt.Errorf("step %q: unsupported unit %q (only day/days is supported)", s, fields[1])
 		}
 		return n, nil
 	default:
-		return 0, fmt.Errorf("invalid step %q", s)
+		return 0, fmt.Errorf("step %q must be an integer or \"<N> days\" (e.g. step=1 or step=\"7 days\")", s)
 	}
 }

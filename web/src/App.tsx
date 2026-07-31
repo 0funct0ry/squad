@@ -2278,7 +2278,7 @@ export default function App() {
 
           <div className="flex-1 overflow-auto p-4">
             {/* EMPTY DATABASE STATE */}
-            {['data', 'schema', 'seed', 'export'].includes(activeTab) && tables.length === 0 && (
+            {['data', 'schema', 'seed', 'export'].includes(activeTab) && tables.length === 0 && !selectedTable && (
               <div className="flex-1 flex items-center justify-center p-8 h-full">
                 <div className="max-w-sm text-center flex flex-col items-center gap-3">
                   <Database className="w-10 h-10 text-slate-300 dark:text-slate-700" />
@@ -2293,6 +2293,12 @@ export default function App() {
                         className="px-3 py-1.5 rounded-md text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-500"
                       >
                         + Create New Table
+                      </button>
+                      <button
+                        onClick={() => setImportModalOpen(true)}
+                        className="px-3 py-1.5 rounded-md text-xs font-medium border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+                      >
+                        Import from file
                       </button>
                       <button
                         onClick={() => setActiveTab('sql')}
@@ -4237,6 +4243,7 @@ export default function App() {
         <ImportModal
           tables={tables.filter(t => t.type === 'table')}
           defaultTableName={selectedTable?.name}
+          forceCreateMode={tables.length === 0}
           onClose={() => setImportModalOpen(false)}
           onToast={(message, type) => showToast(message, type)}
           onImported={(tableName) => {
