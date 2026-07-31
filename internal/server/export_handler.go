@@ -10,6 +10,7 @@ import (
 
 	"github.com/0funct0ry/squad/internal/db"
 	"github.com/0funct0ry/squad/internal/export"
+	"github.com/0funct0ry/squad/internal/vtab"
 	"github.com/gin-gonic/gin"
 )
 
@@ -272,9 +273,96 @@ func (s *Server) handleTableExport(c *gin.Context) {
 		return
 	}
 
-	// 1. Resolve table schema first to ensure table exists (and get DDL)
-	schema, err := db.GetTableSchema(s.db, name)
+	err := vtab.WithMounts(c.Request.Context(), s.db, s.mountStore, func(conn *sql.Conn) error {
+		q := db.WrapConn(conn)
+
+		// 1. Resolve table schema first to ensure table exists (and get DDL)
+		schema, err := db.GetTableSchema(q, name)
+		if err != nil {
+			return err
+		}
+
+		// 2. Build row query
+		filtered := c.Query("filtered") == "true"
+		var selectQuery string
+		var args []interface{}
+		if filtered {
+			// Re-use M1 rows query-param logic
+			orderBy := c.Query("orderBy")
+			dir := c.Query("dir")
+			filters := make(map[string]string)
+			queries := c.Request.URL.Query()
+			for k, v := range queries {
+				if strings.HasPrefix(k, "filter[") && strings.HasSuffix(k, "]") && len(v) > 0 {
+					col := k[7 : len(k)-1]
+					filters[col] = v[0]
+				}
+			}
+			params := db.RowQueryParams{
+				OrderBy: orderBy,
+				Dir:     dir,
+				Filters: filters,
+			}
+			selectQuery, _, args, _, err = db.BuildTableQuery(q, name, params)
+			if err != nil {
+				return err
+			}
+		} else {
+			selectQuery = fmt.Sprintf("SELECT * FROM %s", db.QuoteIdentifier(name))
+		}
+
+		// 2b. Optional column subset: whitelist against the real schema, then
+		// replace the generated SELECT's column list (everything before the
+		// first " FROM ") rather than the caller-visible WHERE/ORDER BY/args,
+		// since both the filtered and unfiltered branches above always produce
+		// a "SELECT <fields> FROM ..." string.
+		if requestedCols := parseColumnsParam(c.Query("columns")); len(requestedCols) > 0 {
+			if err := validateColumnsAgainstSchema(requestedCols, schema); err != nil {
+				return &exportValidationError{err}
+			}
+			quoted := make([]string, len(requestedCols))
+			for i, col := range requestedCols {
+				quoted[i] = db.QuoteIdentifier(col)
+			}
+			fromIdx := strings.Index(selectQuery, " FROM ")
+			selectQuery = "SELECT " + strings.Join(quoted, ", ") + selectQuery[fromIdx:]
+		}
+
+		// Execute query
+		rows, err := conn.QueryContext(c.Request.Context(), selectQuery, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		source, cols, err := makeRowSource(rows, schema)
+		if err != nil {
+			return err
+		}
+
+		// 3. Set headers
+		filename := fmt.Sprintf("%s.%s", sanitizeFilename(name), format)
+		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+
+		c.Header("Content-Type", exportContentType[format])
+		if format == "sql" {
+			return export.ExportSQL(name, cols, source, c.Writer, c.Query("includeSchema") == "true", schema.DDL)
+		}
+		if format == "xml" {
+			return export.ExportXML(cols, source, c.Writer, buildXMLOptions(c, name))
+		}
+		headersParam := c.DefaultQuery("headers", "true") != "false"
+		return writeExport(format, cols, source, c.Writer, headersParam)
+	})
 	if err != nil {
+		var verr *exportValidationError
+		if errors.As(err, &verr) {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"ok":    false,
+				"error": gin.H{"code": "VALIDATION", "message": verr.Error()},
+			})
+			return
+		}
 		if errors.Is(err, db.ErrNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{
 				"ok":    false,
@@ -282,111 +370,24 @@ func (s *Server) handleTableExport(c *gin.Context) {
 			})
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"ok":    false,
-			"error": gin.H{"code": "DB_ERROR", "message": err.Error()},
-		})
-		return
-	}
-
-	// 2. Build row query
-	filtered := c.Query("filtered") == "true"
-	var selectQuery string
-	var args []interface{}
-	if filtered {
-		// Re-use M1 rows query-param logic
-		orderBy := c.Query("orderBy")
-		dir := c.Query("dir")
-		filters := make(map[string]string)
-		queries := c.Request.URL.Query()
-		for k, v := range queries {
-			if strings.HasPrefix(k, "filter[") && strings.HasSuffix(k, "]") && len(v) > 0 {
-				col := k[7 : len(k)-1]
-				filters[col] = v[0]
-			}
-		}
-		params := db.RowQueryParams{
-			OrderBy: orderBy,
-			Dir:     dir,
-			Filters: filters,
-		}
-		var err error
-		selectQuery, _, args, _, err = db.BuildTableQuery(s.db, name, params)
-		if err != nil {
+		if !c.Writer.Written() {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"ok":    false,
 				"error": gin.H{"code": "DB_ERROR", "message": err.Error()},
 			})
 			return
 		}
-	} else {
-		selectQuery = fmt.Sprintf("SELECT * FROM %s", db.QuoteIdentifier(name))
-	}
-
-	// 2b. Optional column subset: whitelist against the real schema, then
-	// replace the generated SELECT's column list (everything before the
-	// first " FROM ") rather than the caller-visible WHERE/ORDER BY/args,
-	// since both the filtered and unfiltered branches above always produce
-	// a "SELECT <fields> FROM ..." string.
-	if requestedCols := parseColumnsParam(c.Query("columns")); len(requestedCols) > 0 {
-		if err := validateColumnsAgainstSchema(requestedCols, schema); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"ok":    false,
-				"error": gin.H{"code": "VALIDATION", "message": err.Error()},
-			})
-			return
-		}
-		quoted := make([]string, len(requestedCols))
-		for i, col := range requestedCols {
-			quoted[i] = db.QuoteIdentifier(col)
-		}
-		fromIdx := strings.Index(selectQuery, " FROM ")
-		selectQuery = "SELECT " + strings.Join(quoted, ", ") + selectQuery[fromIdx:]
-	}
-
-	// Execute query
-	rows, err := s.db.Query(selectQuery, args...)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"ok":    false,
-			"error": gin.H{"code": "DB_ERROR", "message": err.Error()},
-		})
-		return
-	}
-	defer rows.Close()
-
-	source, cols, err := makeRowSource(rows, schema)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"ok":    false,
-			"error": gin.H{"code": "DB_ERROR", "message": err.Error()},
-		})
-		return
-	}
-
-	// 3. Set headers
-	filename := fmt.Sprintf("%s.%s", sanitizeFilename(name), format)
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
-
-	c.Header("Content-Type", exportContentType[format])
-	if format == "sql" {
-		includeSchema := c.Query("includeSchema") == "true"
-		if err := export.ExportSQL(name, cols, source, c.Writer, includeSchema, schema.DDL); err != nil {
-			_ = c.Error(err)
-		}
-		return
-	}
-	if format == "xml" {
-		if err := export.ExportXML(cols, source, c.Writer, buildXMLOptions(c, name)); err != nil {
-			_ = c.Error(err)
-		}
-		return
-	}
-	headersParam := c.DefaultQuery("headers", "true") != "false"
-	if err := writeExport(format, cols, source, c.Writer, headersParam); err != nil {
 		_ = c.Error(err)
 	}
 }
+
+// exportValidationError distinguishes a client-caused VALIDATION error
+// (invalid columns=) from any other DB/write error inside the WithMounts
+// closure above, so the outer handler can map it to 400 instead of 500.
+type exportValidationError struct{ err error }
+
+func (e *exportValidationError) Error() string { return e.err.Error() }
+func (e *exportValidationError) Unwrap() error { return e.err }
 
 func (s *Server) handleQueryExport(c *gin.Context) {
 	format := c.Query("format")
@@ -434,85 +435,76 @@ func (s *Server) handleQueryExport(c *gin.Context) {
 		return
 	}
 
-	rows, err := s.db.Query(req.SQL)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"ok":    false,
-			"error": gin.H{"code": "SQL_ERROR", "message": err.Error()},
-		})
-		return
-	}
-	defer rows.Close()
-
-	source, cols, err := makeRowSource(rows, nil)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"ok":    false,
-			"error": gin.H{"code": "DB_ERROR", "message": err.Error()},
-		})
-		return
-	}
-
-	// Optional column subset: since this route executes arbitrary user SQL,
-	// selection is applied as a post-execution projection over whatever
-	// columns the query already returned, rather than rewriting the SQL
-	// text (unsafe/complex for arbitrary queries).
-	if requestedCols := parseColumnsParam(c.Query("columns")); len(requestedCols) > 0 {
-		projected, projectedCols, err := projectRowSource(cols, source, requestedCols)
+	err = vtab.WithMounts(c.Request.Context(), s.db, s.mountStore, func(conn *sql.Conn) error {
+		rows, err := conn.QueryContext(c.Request.Context(), req.SQL)
 		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		source, cols, err := makeRowSource(rows, nil)
+		if err != nil {
+			return err
+		}
+
+		// Optional column subset: since this route executes arbitrary user SQL,
+		// selection is applied as a post-execution projection over whatever
+		// columns the query already returned, rather than rewriting the SQL
+		// text (unsafe/complex for arbitrary queries).
+		if requestedCols := parseColumnsParam(c.Query("columns")); len(requestedCols) > 0 {
+			projected, projectedCols, err := projectRowSource(cols, source, requestedCols)
+			if err != nil {
+				return &exportValidationError{err}
+			}
+			source, cols = projected, projectedCols
+		}
+
+		// Optional column relabeling: lets the caller override the exported
+		// header/JSON-key names (e.g. when the query's own columns are raw,
+		// unaliased expressions), positionally matched to the final column list.
+		if len(req.ColumnLabels) > 0 {
+			if len(req.ColumnLabels) != len(cols) {
+				return &exportValidationError{fmt.Errorf("columnLabels must have exactly %d entries (one per exported column)", len(cols))}
+			}
+			seen := make(map[string]bool, len(req.ColumnLabels))
+			for _, label := range req.ColumnLabels {
+				if strings.TrimSpace(label) == "" {
+					return &exportValidationError{fmt.Errorf("columnLabels entries cannot be empty")}
+				}
+				if seen[label] {
+					return &exportValidationError{fmt.Errorf("duplicate columnLabels entry %q", label)}
+				}
+				seen[label] = true
+			}
+			cols = req.ColumnLabels
+		}
+
+		filename := fmt.Sprintf("query-export.%s", format)
+		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+
+		c.Header("Content-Type", exportContentType[format])
+		if format == "xml" {
+			return export.ExportXML(cols, source, c.Writer, buildXMLOptions(c, ""))
+		}
+		headersParam := c.DefaultQuery("headers", "true") != "false"
+		return writeExport(format, cols, source, c.Writer, headersParam)
+	})
+	if err != nil {
+		var verr *exportValidationError
+		if errors.As(err, &verr) {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"ok":    false,
-				"error": gin.H{"code": "VALIDATION", "message": err.Error()},
+				"error": gin.H{"code": "VALIDATION", "message": verr.Error()},
 			})
 			return
 		}
-		source, cols = projected, projectedCols
-	}
-
-	// Optional column relabeling: lets the caller override the exported
-	// header/JSON-key names (e.g. when the query's own columns are raw,
-	// unaliased expressions), positionally matched to the final column list.
-	if len(req.ColumnLabels) > 0 {
-		if len(req.ColumnLabels) != len(cols) {
+		if !c.Writer.Written() {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"ok":    false,
-				"error": gin.H{"code": "VALIDATION", "message": fmt.Sprintf("columnLabels must have exactly %d entries (one per exported column)", len(cols))},
+				"error": gin.H{"code": "SQL_ERROR", "message": err.Error()},
 			})
 			return
 		}
-		seen := make(map[string]bool, len(req.ColumnLabels))
-		for _, label := range req.ColumnLabels {
-			if strings.TrimSpace(label) == "" {
-				c.JSON(http.StatusBadRequest, gin.H{
-					"ok":    false,
-					"error": gin.H{"code": "VALIDATION", "message": "columnLabels entries cannot be empty"},
-				})
-				return
-			}
-			if seen[label] {
-				c.JSON(http.StatusBadRequest, gin.H{
-					"ok":    false,
-					"error": gin.H{"code": "VALIDATION", "message": fmt.Sprintf("duplicate columnLabels entry %q", label)},
-				})
-				return
-			}
-			seen[label] = true
-		}
-		cols = req.ColumnLabels
-	}
-
-	filename := fmt.Sprintf("query-export.%s", format)
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
-
-	c.Header("Content-Type", exportContentType[format])
-	if format == "xml" {
-		if err := export.ExportXML(cols, source, c.Writer, buildXMLOptions(c, "")); err != nil {
-			_ = c.Error(err)
-		}
-		return
-	}
-	headersParam := c.DefaultQuery("headers", "true") != "false"
-	if err := writeExport(format, cols, source, c.Writer, headersParam); err != nil {
 		_ = c.Error(err)
 	}
 }

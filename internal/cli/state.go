@@ -10,6 +10,7 @@ import (
 	"os"
 
 	"github.com/0funct0ry/squad/internal/restserver"
+	"github.com/0funct0ry/squad/internal/vtab"
 )
 
 // OutputMode names one of the .mode render formats.
@@ -109,10 +110,18 @@ type State struct {
 	// .bookmark/.bookmarks use (see bookmarks.go).
 	Bookmarks map[string]bookmarkProfile
 
+	// Virtual table modules (".modules"/".mounts"/".mount"/".unmount").
+	// ModulesEnabled mirrors --modules; MountStore is always non-nil so
+	// dot-commands can list/validate against it uniformly, but mounting
+	// itself is refused with a clear error when ModulesEnabled is false.
+	ModulesEnabled bool
+	ModulesRoot    string
+	MountStore     *vtab.MountStore
+
 	Quit bool
 }
 
-func NewState(database *sql.DB, path string, write, interactive, readOnly bool, restPort int, restBindAddr string) *State {
+func NewState(database *sql.DB, path string, write, interactive, readOnly bool, restPort int, restBindAddr string, modulesEnabled bool, modulesRoot string) *State {
 	mode := ModeList
 	headers := false
 	if interactive {
@@ -133,6 +142,9 @@ func NewState(database *sql.DB, path string, write, interactive, readOnly bool, 
 		Out:                os.Stdout,
 		RestPort:           restPort,
 		RestBindAddr:       restBindAddr,
+		ModulesEnabled:     modulesEnabled,
+		ModulesRoot:        modulesRoot,
+		MountStore:         vtab.NewMountStore(),
 	}
 }
 

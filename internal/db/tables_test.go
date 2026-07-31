@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -255,4 +256,100 @@ func TestGetTableSchemaDetailed(t *testing.T) {
 			t.Errorf("expected pk 'select', got %+v", schema.PrimaryKey)
 		}
 	})
+}
+
+// TestVirtualTableIntrospection exercises the M10e introspection fixes
+// against a temp-schema virtual table (fts5, a driver built-in — no need to
+// pull in internal/vtab and risk an import cycle back to this package) to
+// prove the same properties a --modules mount needs: GetTableSchema resolves
+// it via temp.sqlite_master, marks it IsVirtual, and BuildTableQuery does
+// not prepend a bogus rowid column for it. GetTables must NOT surface it —
+// mounted/temp tables are listed from the MountStore, not sqlite_master.
+func TestVirtualTableIntrospection(t *testing.T) {
+	sqlDB, err := OpenDB(":memory:", false)
+	if err != nil {
+		t.Fatalf("failed to open db: %v", err)
+	}
+	defer sqlDB.Close()
+
+	if _, err := sqlDB.Exec(`CREATE VIRTUAL TABLE temp.notes USING fts5(body)`); err != nil {
+		t.Skipf("fts5 not available in this build: %v", err)
+	}
+
+	schema, err := GetTableSchema(sqlDB, "notes")
+	if err != nil {
+		t.Fatalf("GetTableSchema on a temp-schema virtual table: %v", err)
+	}
+	if !schema.IsVirtual {
+		t.Error("expected IsVirtual=true for a CREATE VIRTUAL TABLE")
+	}
+	if len(schema.PrimaryKey) != 0 {
+		t.Errorf("fts5 declares no primary key, got %v", schema.PrimaryKey)
+	}
+
+	selectQuery, _, _, _, err := BuildTableQuery(sqlDB, "notes", RowQueryParams{})
+	if err != nil {
+		t.Fatalf("BuildTableQuery: %v", err)
+	}
+	if strings.Contains(selectQuery, "rowid, *") {
+		t.Errorf("expected no rowid prefix for a virtual table, got query %q", selectQuery)
+	}
+
+	tables, err := GetTables(sqlDB)
+	if err != nil {
+		t.Fatalf("GetTables: %v", err)
+	}
+	for _, tbl := range tables {
+		if tbl.Name == "notes" {
+			t.Error("GetTables must not surface a temp-schema virtual table; it's listed from the MountStore instead")
+		}
+	}
+}
+
+// TestGetTablesMarksMainSchemaVirtualTables covers the case a mount doesn't:
+// a virtual table declared directly in main (e.g. a user typing `CREATE
+// VIRTUAL TABLE ... USING csv(...)` into the SQL editor, rather than
+// `.mount`/the Modules tab). Unlike a temp-schema mount, this one *is* a
+// real, permanent object in the user's own schema, so GetTables must list it
+// like any other table — but flagged IsVirtual so the sidebar can render it
+// distinctly from a real, storage-backed table.
+func TestGetTablesMarksMainSchemaVirtualTables(t *testing.T) {
+	sqlDB, err := OpenDB(":memory:", false)
+	if err != nil {
+		t.Fatalf("failed to open db: %v", err)
+	}
+	defer sqlDB.Close()
+
+	if _, err := sqlDB.Exec(`CREATE VIRTUAL TABLE notes USING fts5(body)`); err != nil {
+		t.Skipf("fts5 not available in this build: %v", err)
+	}
+	if _, err := sqlDB.Exec(`CREATE TABLE real_table (id INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatalf("failed to create real_table: %v", err)
+	}
+
+	tables, err := GetTables(sqlDB)
+	if err != nil {
+		t.Fatalf("GetTables: %v", err)
+	}
+
+	byName := make(map[string]TableInfo, len(tables))
+	for _, tbl := range tables {
+		byName[tbl.Name] = tbl
+	}
+
+	notes, ok := byName["notes"]
+	if !ok {
+		t.Fatal("expected a main-schema virtual table to appear in GetTables")
+	}
+	if !notes.IsVirtual {
+		t.Error("expected IsVirtual=true for a main-schema CREATE VIRTUAL TABLE")
+	}
+
+	real, ok := byName["real_table"]
+	if !ok {
+		t.Fatal("expected real_table to appear in GetTables")
+	}
+	if real.IsVirtual {
+		t.Error("expected IsVirtual=false for an ordinary table")
+	}
 }

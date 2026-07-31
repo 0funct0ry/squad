@@ -87,8 +87,35 @@ func (c *completer) completeDot(text string) ([][]rune, int) {
 		return toCandidates(word, []string{"on", "off"})
 	case ".bookmark":
 		return toCandidates(word, []string{"save", "load"})
+	case ".unmount":
+		return toCandidates(word, c.state.mountAliasNames())
+	case ".modules":
+		return toCandidates(word, moduleNames())
+	case ".mount":
+		return c.completeMount(fields, word, endsWithSpace)
 	default:
 		return nil, 0
+	}
+}
+
+// completeMount is .mount's third completion level: MODULE (against the
+// registered module names), then ALIAS (no completion), then that module's
+// --flag names once MODULE is known.
+func (c *completer) completeMount(fields []string, word string, endsWithSpace bool) ([][]rune, int) {
+	position := len(fields) - 1
+	if endsWithSpace {
+		position = len(fields)
+	}
+	switch position {
+	case 1:
+		return toCandidates(word, moduleNames())
+	case 2:
+		return nil, 0
+	default:
+		if len(fields) < 2 {
+			return nil, 0
+		}
+		return toCandidates(word, moduleFlagNames(fields[1]))
 	}
 }
 

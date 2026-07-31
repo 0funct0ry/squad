@@ -8,6 +8,7 @@ import (
 
 	"github.com/0funct0ry/squad/internal/db"
 	"github.com/0funct0ry/squad/internal/server"
+	"github.com/0funct0ry/squad/internal/vtab"
 	"github.com/spf13/cobra"
 )
 
@@ -20,6 +21,7 @@ import (
 type SandboxConfig struct {
 	commonFlags
 	restFlags
+	moduleFlags
 	Dir         string
 	MaxUploadMB int64
 	Examples    bool
@@ -44,6 +46,7 @@ func init() {
 	sandboxCmd.Flags().StringVar(&sandboxCfg.Dir, "dir", "", "Directory to store sandbox database files (env SQUAD_SANDBOX_DIR); defaults to a fresh temp dir")
 	sandboxCmd.Flags().Int64Var(&sandboxCfg.MaxUploadMB, "max-upload-size", 512, "Max upload size in MB for sandbox database files")
 	sandboxCmd.Flags().BoolVarP(&sandboxCfg.Examples, "examples", "e", false, "Enable the canned example data-model library")
+	registerModuleFlags(sandboxCmd.Flags(), &sandboxCfg.moduleFlags)
 	rootCmd.AddCommand(sandboxCmd)
 }
 
@@ -89,6 +92,12 @@ func runSandbox(cmd *cobra.Command, args []string) {
 		absDir = dir
 	}
 
+	modulesRoot := sandboxCfg.ModulesRoot
+	if modulesRoot == "" {
+		modulesRoot = absDir
+	}
+	vtab.Configure(sandboxCfg.Modules, modulesRoot)
+
 	registry := db.NewRegistry(absDir, sandboxCfg.MaxUploadMB*1024*1024)
 	if dirExplicitlySet {
 		for _, rescanErr := range registry.Rescan() {
@@ -105,6 +114,9 @@ func runSandbox(cmd *cobra.Command, args []string) {
 	fmt.Printf("  sandbox dir : %s\n", absDir)
 
 	srv := server.NewSandboxServer(registry, sandboxCfg.Examples, sandboxCfg.Rest, sandboxCfg.RestBindAddr, sandboxCfg.RestPort, sandboxCfg.LogLevel)
+	if sandboxCfg.Modules {
+		srv.EnableModules(modulesRoot)
+	}
 	addr := fmt.Sprintf("%s:%d", sandboxCfg.Addr, sandboxCfg.Port)
 	fmt.Printf("  address     : http://%s\n", addr)
 	if sandboxCfg.Rest {

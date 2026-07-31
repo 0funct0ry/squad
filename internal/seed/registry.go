@@ -26,6 +26,7 @@ const (
 	OptKindBool      OptionKind = "bool"
 	OptKindString    OptionKind = "string"
 	OptKindDateTime  OptionKind = "datetime" // RFC3339 wire format, matches optTime
+	OptKindDate      OptionKind = "date"     // plain YYYY-MM-DD, no time component (e.g. vtab's calendar module)
 	OptKindSelect    OptionKind = "select"
 	OptKindColumns   OptionKind = "columns"   // formula-only: multi-select of sibling column names
 	OptKindTextarea  OptionKind = "textarea"  // multi-line free text, e.g. value lists / DSL blocks

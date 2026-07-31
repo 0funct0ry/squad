@@ -16,6 +16,7 @@ import (
 
 	"github.com/0funct0ry/squad/internal/db"
 	"github.com/0funct0ry/squad/internal/restserver"
+	"github.com/0funct0ry/squad/internal/vtab"
 	"github.com/0funct0ry/squad/web"
 	"github.com/gin-gonic/gin"
 )
@@ -31,6 +32,23 @@ type Server struct {
 
 	restManager *restserver.Manager
 	restConfigs *restserver.ConfigStore
+
+	// Virtual table modules (--modules). modulesEnabled/modulesRoot are
+	// captured once (like restManager's enabled/write fields) via
+	// EnableModules, called right after construction when --modules was
+	// passed; mountStore is always non-nil so route handlers can operate on
+	// it uniformly, but every mount route is refused with MODULES_DISABLED
+	// while modulesEnabled is false.
+	modulesEnabled bool
+	modulesRoot    string
+	mountStore     *vtab.MountStore
+}
+
+// EnableModules turns on the --modules routes for this server, recording the
+// file confinement root used by file-reading modules.
+func (s *Server) EnableModules(modulesRoot string) {
+	s.modulesEnabled = true
+	s.modulesRoot = modulesRoot
 }
 
 // parseLogLevel maps the --log-level flag value to an slog.Level, defaulting
@@ -149,6 +167,7 @@ func NewServer(database *sql.DB, dbPath string, write bool, examplesEnabled bool
 	}
 
 	s.restConfigs = restserver.NewConfigStore()
+	s.mountStore = vtab.NewMountStore()
 	s.restManager = restserver.NewManager(restEnabled, write, restBindAddr, restPort, &singleDBProvider{db: database, dbPath: dbPath}, s.restConfigs)
 
 	s.router.Use(gin.Recovery())
@@ -177,6 +196,7 @@ func NewSandboxServer(registry *db.Registry, examplesEnabled bool, restEnabled b
 	}
 
 	s.restConfigs = restserver.NewConfigStore()
+	s.mountStore = vtab.NewMountStore()
 	s.restManager = restserver.NewManager(restEnabled, true, restBindAddr, restPort, &sandboxDBProvider{registry: registry}, s.restConfigs)
 
 	s.router.Use(gin.Recovery())
@@ -269,9 +289,11 @@ func (s *Server) setupSingleDBRoutes(api *gin.RouterGroup) {
 	api.POST("/tables/import", s.WriteGateMiddleware("importing rows"), s.handleImportCreateTable)
 	api.GET("/tables/:name/seed/plan", s.WriteGateMiddleware("seeding table"), s.handleSeedPlan)
 	api.POST("/tables/:name/seed", s.WriteGateMiddleware("seeding table"), s.handleSeedTable)
+	api.GET("/seed/generators/catalog", s.handleSeedGeneratorsCatalog)
 	api.GET("/seed/generators/:name/sample", s.WriteGateMiddleware("seeding table"), s.handleSeedGeneratorSample)
 
 	s.registerExamplesRoutes(api)
+	s.registerModulesRoutes(api)
 }
 
 func (s *Server) handleMeta(c *gin.Context) {
@@ -307,7 +329,12 @@ func (s *Server) handleTables(c *gin.Context) {
 
 func (s *Server) handleTableSchema(c *gin.Context) {
 	name := c.Param("name")
-	schema, err := db.GetTableSchema(s.db, name)
+	var schema *db.TableSchema
+	err := vtab.WithMounts(c.Request.Context(), s.db, s.mountStore, func(conn *sql.Conn) error {
+		var err error
+		schema, err = db.GetTableSchema(db.WrapConn(conn), name)
+		return err
+	})
 	if err != nil {
 		if errors.Is(err, db.ErrNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{
@@ -367,7 +394,12 @@ func (s *Server) handleTableRows(c *gin.Context) {
 		Filters: filters,
 	}
 
-	result, err := db.GetTableRows(s.db, name, params)
+	var result *db.RowResult
+	err := vtab.WithMounts(c.Request.Context(), s.db, s.mountStore, func(conn *sql.Conn) error {
+		var err error
+		result, err = db.GetTableRows(db.WrapConn(conn), name, params)
+		return err
+	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"ok":    false,

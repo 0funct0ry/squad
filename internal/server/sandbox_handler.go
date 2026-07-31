@@ -43,7 +43,14 @@ func (s *Server) setupSandboxRoutes(api *gin.RouterGroup) {
 		scoped.DELETE("/tables/:name/rows", scopedHandler((*Server).handleDeleteRow))
 		scoped.GET("/tables/:name/seed/plan", scopedHandler((*Server).handleSeedPlan))
 		scoped.POST("/tables/:name/seed", scopedHandler((*Server).handleSeedTable))
+		scoped.GET("/seed/generators/catalog", scopedHandler((*Server).handleSeedGeneratorsCatalog))
 		scoped.GET("/seed/generators/:name/sample", scopedHandler((*Server).handleSeedGeneratorSample))
+
+		scoped.GET("/modules", scopedHandler((*Server).handleModulesInfo))
+		scoped.GET("/modules/mounts", scopedHandler((*Server).handleListMounts))
+		scoped.POST("/modules/mounts", scopedHandler((*Server).handleCreateMount))
+		scoped.DELETE("/modules/mounts/:alias", scopedHandler((*Server).handleDeleteMount))
+		scoped.POST("/modules/mounts/:alias/preview", scopedHandler((*Server).handlePreviewMount))
 	}
 
 	s.registerExamplesRoutes(api)
@@ -65,7 +72,15 @@ func (s *Server) sandboxResolveMiddleware() gin.HandlerFunc {
 			})
 			return
 		}
-		c.Set(scopedServerKey, &Server{router: s.router, db: entry.DB, dbPath: entry.Path, write: true})
+		c.Set(scopedServerKey, &Server{
+			router:         s.router,
+			db:             entry.DB,
+			dbPath:         entry.Path,
+			write:          true,
+			modulesEnabled: s.modulesEnabled,
+			modulesRoot:    s.modulesRoot,
+			mountStore:     s.mountStore,
+		})
 		c.Next()
 		if c.Request.Method != http.MethodGet {
 			s.registry.Touch(id)

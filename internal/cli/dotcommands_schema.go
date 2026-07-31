@@ -39,6 +39,17 @@ func (s *State) cmdOpen(args []string) {
 	s.Path = resolved
 	old.Close()
 	s.invalidateSchemaCache()
+
+	// Mounts reference file paths/args that may not make sense against a
+	// different database, so .open drops them rather than silently
+	// reconnecting them to a database they were never mounted against.
+	if n := s.MountStore.Len(); n > 0 {
+		for _, m := range s.MountStore.List() {
+			s.MountStore.Remove(m.Alias)
+		}
+		fmt.Fprintf(s.Out, "dropped %d mount(s) active on the previous database\n", n)
+	}
+
 	fmt.Fprintf(s.Out, "now connected to %s\n", resolved)
 }
 

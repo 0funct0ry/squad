@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -10,9 +11,53 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// Queryer is the subset of *sql.DB's read API that GetTables/GetTableSchema/
+// BuildTableQuery/GetTableRows need. *sql.DB satisfies it as-is, so every
+// existing call site keeps compiling unchanged; WrapConn additionally lets a
+// pinned *sql.Conn (from vtab.WithMounts, so mounted tables are visible on
+// the connection they were replayed onto) satisfy it too.
+type Queryer interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+// connQueryer adapts a *sql.Conn to the Queryer interface via the context
+// variants (sql.Conn has no non-context Query/QueryRow methods).
+type connQueryer struct{ conn *sql.Conn }
+
+func (c *connQueryer) Query(query string, args ...any) (*sql.Rows, error) {
+	return c.conn.QueryContext(context.Background(), query, args...)
+}
+
+func (c *connQueryer) QueryRow(query string, args ...any) *sql.Row {
+	return c.conn.QueryRowContext(context.Background(), query, args...)
+}
+
+// WrapConn adapts a *sql.Conn (typically one pinned by vtab.WithMounts so
+// mounted tables are visible) to Queryer.
+func WrapConn(conn *sql.Conn) Queryer {
+	return &connQueryer{conn: conn}
+}
+
+// RegisterModulesHook is called once at the top of every OpenDB call, before
+// sql.Open. It exists so internal/vtab (which depends on internal/seed,
+// which depends on this package) can be wired in without an import cycle:
+// cmd/ sets this to vtab.Register in an init(), so it's always in place
+// however the process opens its first database — cmd/root.go, cmd/cli.go,
+// or the sandbox Registry's registerOpened/Rescan paths. vtab.Register is
+// itself a sync.Once-guarded no-op unless vtab.Configure(true, ...) was
+// called (i.e. --modules was passed), so this is a no-op by default.
+var RegisterModulesHook func() error
+
 // OpenDB opens a SQLite database using modernc.org/sqlite.
 // If readOnly is true, it opens the database in read-only mode using mode=ro DSN parameter.
 func OpenDB(path string, readOnly bool) (*sql.DB, error) {
+	if RegisterModulesHook != nil {
+		if err := RegisterModulesHook(); err != nil {
+			return nil, fmt.Errorf("failed to register virtual table modules: %w", err)
+		}
+	}
+
 	dsn := path
 	if readOnly {
 		// In read-only mode, SQLite's own mode=ro URI handling refuses to

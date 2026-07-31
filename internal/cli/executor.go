@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/0funct0ry/squad/internal/db"
+	"github.com/0funct0ry/squad/internal/vtab"
 	"github.com/fatih/color"
 )
 
@@ -107,15 +109,21 @@ func (s *State) Execute(statement string) {
 	}
 
 	start := time.Now()
-	rows, err := s.DB.Query(rendered)
+	var cols []string
+	var resultRows [][]any
+	// Routed through a pinned connection with mounts replayed, the same way
+	// the web server's read routes are — a plain s.DB.Query could land on a
+	// pooled connection that never saw this session's CREATE VIRTUAL TABLE.
+	err = vtab.WithMounts(context.Background(), s.DB, s.MountStore, func(conn *sql.Conn) error {
+		rows, err := conn.QueryContext(context.Background(), rendered)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		cols, resultRows, err = scanRowsToValues(rows)
+		return err
+	})
 	elapsed := time.Since(start)
-	if err != nil {
-		s.shellError(err)
-		return
-	}
-	defer rows.Close()
-
-	cols, resultRows, err := scanRowsToValues(rows)
 	if err != nil {
 		s.shellError(err)
 		return

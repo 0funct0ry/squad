@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/0funct0ry/squad/internal/db"
+	"github.com/0funct0ry/squad/internal/vtab"
 	"github.com/gin-gonic/gin"
 )
 
@@ -264,36 +265,41 @@ func (s *Server) handleQuery(c *gin.Context) {
 		execDuration = float64(time.Since(startTime).Nanoseconds()) / 1e6
 		rowsAffected = totalRowsAffected
 	} else {
-		// Single read-only statement: run directly without a transaction
+		// Single read-only statement: run directly without a transaction,
+		// but still through a pinned connection with mounts replayed so a
+		// query against a mounted table (or a join involving one) sees it.
 		stmt := statements[0]
 		startTime := time.Now()
 
-		rows, err := s.db.Query(stmt)
-		if err != nil {
+		queryErr := vtab.WithMounts(c.Request.Context(), s.db, s.mountStore, func(conn *sql.Conn) error {
+			rows, err := conn.QueryContext(c.Request.Context(), stmt)
+			if err != nil {
+				return err
+			}
+			var scanErr error
+			cols, resultRows, truncated, scanErr = scanQueryRows(rows, limit)
+			rows.Close()
+			if scanErr != nil {
+				return scanErr
+			}
+
+			if table, pkCols, ok := db.AnalyzeSelect(stmt, func(name string) (*db.TableSchema, error) {
+				return db.GetTableSchema(db.WrapConn(conn), name)
+			}); ok {
+				sourceTable = table
+				primaryKeyColumns = pkCols
+			}
+			return nil
+		})
+		if queryErr != nil {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"ok":    false,
-				"error": gin.H{"code": "SQL_ERROR", "message": err.Error()},
-			})
-			return
-		}
-		cols, resultRows, truncated, err = scanQueryRows(rows, limit)
-		rows.Close()
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"ok":    false,
-				"error": gin.H{"code": "SQL_ERROR", "message": err.Error()},
+				"error": gin.H{"code": "SQL_ERROR", "message": queryErr.Error()},
 			})
 			return
 		}
 
 		execDuration = float64(time.Since(startTime).Nanoseconds()) / 1e6
-
-		if table, pkCols, ok := db.AnalyzeSelect(stmt, func(name string) (*db.TableSchema, error) {
-			return db.GetTableSchema(s.db, name)
-		}); ok {
-			sourceTable = table
-			primaryKeyColumns = pkCols
-		}
 	}
 
 	if cols == nil {

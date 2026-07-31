@@ -12,6 +12,7 @@ import (
 
 	"github.com/0funct0ry/squad/internal/db"
 	"github.com/0funct0ry/squad/internal/server"
+	"github.com/0funct0ry/squad/internal/vtab"
 	"github.com/spf13/cobra"
 )
 
@@ -23,6 +24,7 @@ var (
 type Config struct {
 	commonFlags
 	restFlags
+	moduleFlags
 	Write          bool
 	ReadOnlyPragma bool
 	Examples       bool
@@ -61,6 +63,16 @@ var rootCmd = &cobra.Command{
 		}
 		fmt.Printf("  database : %s  (%s)\n", resolvedPath, modeStr)
 
+		modulesRoot := cfg.ModulesRoot
+		if modulesRoot == "" {
+			if resolvedPath == ":memory:" || strings.HasPrefix(resolvedPath, "file:") {
+				modulesRoot = "."
+			} else {
+				modulesRoot = filepath.Dir(resolvedPath)
+			}
+		}
+		vtab.Configure(cfg.Modules, modulesRoot)
+
 		// Open the database
 		database, err := db.OpenDB(resolvedPath, readOnly)
 		if err != nil {
@@ -76,6 +88,9 @@ var rootCmd = &cobra.Command{
 
 		// Start the server
 		srv := server.NewServer(database, resolvedPath, cfg.Write, cfg.Examples, cfg.Rest, cfg.RestBindAddr, cfg.RestPort, cfg.LogLevel)
+		if cfg.Modules {
+			srv.EnableModules(modulesRoot)
+		}
 		addr := fmt.Sprintf("%s:%d", cfg.Addr, cfg.Port)
 		fmt.Printf("  address  : http://%s\n", addr)
 		if cfg.Rest {
@@ -125,6 +140,7 @@ func init() {
 	// Bind flags to Config struct
 	registerCommonFlags(rootCmd.Flags(), &cfg.commonFlags)
 	registerRestFlags(rootCmd.Flags(), &cfg.restFlags)
+	registerModuleFlags(rootCmd.Flags(), &cfg.moduleFlags)
 	rootCmd.Flags().BoolVarP(&cfg.Write, "write", "w", false, "Enable mutations (DDL, DML, write operations)")
 	rootCmd.Flags().BoolVarP(&cfg.ReadOnlyPragma, "read-only-pragma", "R", true, "Open SQLite with mode=ro when not --write")
 	rootCmd.Flags().BoolVarP(&cfg.Examples, "examples", "e", false, "Enable the canned example data-model library")

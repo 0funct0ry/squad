@@ -383,6 +383,19 @@ func (s *Server) handleSeedTable(c *gin.Context) {
 	})
 }
 
+// GET /api/seed/generators/catalog — the same generator catalog embedded in
+// a seed plan response, but standalone and ungated (no table, no --write
+// requirement), so callers that aren't table-scoped — currently the Modules
+// tab's `fake` mount form, which needs generator names for its repeatable
+// <column>=<generator> pairs — can list generators without a real table to
+// build a seed plan against.
+func (s *Server) handleSeedGeneratorsCatalog(c *gin.Context) {
+	c.JSON(200, gin.H{
+		"ok":   true,
+		"data": gin.H{"generatorCatalog": seed.GeneratorCatalog()},
+	})
+}
+
 // GET /api/seed/generators/:name/sample
 func (s *Server) handleSeedGeneratorSample(c *gin.Context) {
 	name := c.Param("name")

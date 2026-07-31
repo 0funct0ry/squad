@@ -20,7 +20,7 @@ var dotCommandNames = []string{
 	".edit", ".save", ".grep", ".rest", ".listener", ".token", ".timer",
 	".stats", ".explain", ".plan", ".bookmark", ".bookmarks", ".shell", ".sh",
 	".watch", ".open", ".backup", ".clone", ".seed", ".diff", ".constraints",
-	".size", ".stat", ".repeat",
+	".size", ".stat", ".repeat", ".modules", ".mounts", ".mount", ".unmount",
 }
 
 const helpText = `.help                     show this message
@@ -67,6 +67,10 @@ const helpText = `.help                     show this message
 .constraints TABLE        show PK/FK/NOT NULL/UNIQUE/CHECK constraints
 .size / .stat db          show database file/meta info
 .repeat N "QUERY"         run QUERY N times, re-expanding {{ }} templates fresh each time
+.modules ?NAME?           list virtual table modules, or one module's flags/columns (--modules)
+.mounts                   list active virtual table mounts
+.mount MODULE ALIAS FLAGS...  mount MODULE under ALIAS, e.g. .mount csv x --file data.csv (--modules)
+.unmount ALIAS            drop an active mount
 `
 
 // dispatchDotCommand parses and executes a dot-command line. ".echo" and
@@ -110,6 +114,10 @@ func (s *State) dispatchDotCommand(line string) {
 	}
 	if trimmed == ".repeat" || strings.HasPrefix(trimmed, ".repeat ") {
 		s.cmdRepeat(strings.TrimSpace(strings.TrimPrefix(trimmed, ".repeat")))
+		return
+	}
+	if trimmed == ".mount" || strings.HasPrefix(trimmed, ".mount ") {
+		s.cmdMount(strings.TrimSpace(strings.TrimPrefix(trimmed, ".mount")))
 		return
 	}
 
@@ -195,6 +203,12 @@ func (s *State) dispatchDotCommand(line string) {
 			return
 		}
 		s.cmdSize(nil)
+	case ".modules":
+		s.cmdModules(args)
+	case ".mounts":
+		s.cmdMounts()
+	case ".unmount":
+		s.cmdUnmount(args)
 	default:
 		s.shellError(fmt.Errorf("unknown command or invalid arguments: %q. Enter \".help\" for help", cmd))
 	}

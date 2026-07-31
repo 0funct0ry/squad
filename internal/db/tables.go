@@ -17,6 +17,12 @@ type TableInfo struct {
 	Name     string `json:"name"`
 	Type     string `json:"type"` // "table" or "view"
 	RowCount int64  `json:"rowCount"`
+	// IsVirtual is true for a virtual table declared directly in the user's
+	// own schema (e.g. `CREATE VIRTUAL TABLE ... USING csv(...)` typed into
+	// the SQL editor), as opposed to a mount, which lives in temp and is
+	// never listed here — see GetTableSchema's IsVirtual for the same
+	// substring-on-DDL detection.
+	IsVirtual bool `json:"isVirtual"`
 }
 
 type ColumnInfo struct {
@@ -27,6 +33,10 @@ type ColumnInfo struct {
 	PK         int     `json:"pk"` // 0 if not pk, otherwise 1-based index
 	Hidden     int     `json:"hidden"`
 	Generated  *string `json:"generated"` // nil | "virtual" | "stored"
+	// IsHiddenVtabColumn is true for a virtual table's HIDDEN column
+	// (table_xinfo's hidden==1 case), as opposed to hidden==2/3's generated
+	// columns — e.g. a mount alias's implicit constraint-only columns.
+	IsHiddenVtabColumn bool `json:"isHiddenVtabColumn,omitempty"`
 }
 
 type IndexInfo struct {
@@ -55,16 +65,21 @@ type TriggerInfo struct {
 }
 
 type TableSchema struct {
-	Name         string           `json:"name"`
-	Type         string           `json:"type"` // "table" or "view"
-	RowCount     int64            `json:"rowCount"`
-	WithoutRowid bool             `json:"withoutRowid"`
-	Columns      []ColumnInfo     `json:"columns"`
-	PrimaryKey   []string         `json:"primaryKey"`
-	Indexes      []IndexInfo      `json:"indexes"`
-	ForeignKeys  []ForeignKeyInfo `json:"foreignKeys"`
-	Triggers     []TriggerInfo    `json:"triggers"`
-	DDL          string           `json:"ddl"`
+	Name         string `json:"name"`
+	Type         string `json:"type"` // "table" or "view"
+	RowCount     int64  `json:"rowCount"`
+	WithoutRowid bool   `json:"withoutRowid"`
+	// IsVirtual is true for a virtual table (a mount, or any other `CREATE
+	// VIRTUAL TABLE`), detected the same way WithoutRowid is: a substring
+	// check on the table's own DDL. Most virtual tables have no usable
+	// rowid, so BuildTableQuery must not prepend one for these.
+	IsVirtual   bool             `json:"isVirtual"`
+	Columns     []ColumnInfo     `json:"columns"`
+	PrimaryKey  []string         `json:"primaryKey"`
+	Indexes     []IndexInfo      `json:"indexes"`
+	ForeignKeys []ForeignKeyInfo `json:"foreignKeys"`
+	Triggers    []TriggerInfo    `json:"triggers"`
+	DDL         string           `json:"ddl"`
 }
 
 type RowResult struct {
@@ -82,10 +97,10 @@ type RowQueryParams struct {
 }
 
 // GetTables returns a list of tables and views with their row counts.
-func GetTables(db *sql.DB) ([]TableInfo, error) {
+func GetTables(db Queryer) ([]TableInfo, error) {
 	rows, err := db.Query(`
-		SELECT name, type 
-		FROM sqlite_master 
+		SELECT name, type, sql
+		FROM sqlite_master
 		WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'
 		ORDER BY name
 	`)
@@ -97,12 +112,14 @@ func GetTables(db *sql.DB) ([]TableInfo, error) {
 	tables := make([]TableInfo, 0)
 	for rows.Next() {
 		var name, ttype string
-		if err := rows.Scan(&name, &ttype); err != nil {
+		var sqlText sql.NullString
+		if err := rows.Scan(&name, &ttype, &sqlText); err != nil {
 			return nil, fmt.Errorf("failed to scan table row: %w", err)
 		}
 		tables = append(tables, TableInfo{
-			Name: name,
-			Type: ttype,
+			Name:      name,
+			Type:      ttype,
+			IsVirtual: strings.Contains(strings.ToLower(sqlText.String), "virtual table"),
 		})
 	}
 
@@ -123,13 +140,19 @@ func GetTables(db *sql.DB) ([]TableInfo, error) {
 }
 
 // GetTableSchema retrieves column info, indexes, foreign keys, triggers, and DDL for a table.
-func GetTableSchema(db *sql.DB, tableName string) (*TableSchema, error) {
+func GetTableSchema(db Queryer, tableName string) (*TableSchema, error) {
 	quotedName := QuoteIdentifier(tableName)
 
-	// 0. Resolve against sqlite_master
+	// 0. Resolve against sqlite_master. Mounts live in the temp schema, not
+	// main, so this has to search both — unqualified "sqlite_master" only
+	// ever resolves to main.sqlite_master.
 	var objType string
 	err := db.QueryRow(
-		"SELECT type FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
+		`SELECT type FROM (
+			SELECT type, name FROM sqlite_master
+			UNION ALL
+			SELECT type, name FROM temp.sqlite_master
+		) WHERE type IN ('table', 'view') AND name = ?`,
 		tableName,
 	).Scan(&objType)
 	if err != nil {
@@ -179,13 +202,14 @@ func GetTableSchema(db *sql.DB, tableName string) (*TableSchema, error) {
 		}
 
 		columns = append(columns, ColumnInfo{
-			Name:       name,
-			Type:       ctype,
-			NotNull:    notnull != 0,
-			DefaultVal: dflt,
-			PK:         pk,
-			Hidden:     hidden,
-			Generated:  generated,
+			Name:               name,
+			Type:               ctype,
+			NotNull:            notnull != 0,
+			DefaultVal:         dflt,
+			PK:                 pk,
+			Hidden:             hidden,
+			Generated:          generated,
+			IsHiddenVtabColumn: hidden == 1,
 		})
 
 		if pk > 0 {
@@ -312,15 +336,26 @@ func GetTableSchema(db *sql.DB, tableName string) (*TableSchema, error) {
 		})
 	}
 
-	// 5. DDL
+	// 5. DDL (same main+temp union as step 0, for the same reason)
 	var ddl string
-	err = db.QueryRow("SELECT sql FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?", tableName).Scan(&ddl)
+	err = db.QueryRow(
+		`SELECT sql FROM (
+			SELECT sql, type, name FROM sqlite_master
+			UNION ALL
+			SELECT sql, type, name FROM temp.sqlite_master
+		) WHERE type IN ('table', 'view') AND name = ?`,
+		tableName,
+	).Scan(&ddl)
 	if err != nil && err != sql.ErrNoRows {
 		return nil, fmt.Errorf("failed to get DDL: %w", err)
 	}
-	withoutRowid := strings.Contains(strings.ToLower(ddl), "without rowid")
+	ddlLower := strings.ToLower(ddl)
+	withoutRowid := strings.Contains(ddlLower, "without rowid")
+	isVirtual := strings.Contains(ddlLower, "virtual table")
 
-	// 6. Row count
+	// 6. Row count. Errors are swallowed to 0 rather than propagated: some
+	// virtual table modules reject an unconstrained COUNT(*) (no pushdown
+	// possible), and a failed count shouldn't block the rest of the schema.
 	var rowCount int64
 	if err := db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", quotedName)).Scan(&rowCount); err != nil {
 		rowCount = 0
@@ -331,6 +366,7 @@ func GetTableSchema(db *sql.DB, tableName string) (*TableSchema, error) {
 		Type:         objType,
 		RowCount:     rowCount,
 		WithoutRowid: withoutRowid,
+		IsVirtual:    isVirtual,
 		Columns:      columns,
 		PrimaryKey:   pkNames,
 		Indexes:      indexes,
@@ -341,7 +377,7 @@ func GetTableSchema(db *sql.DB, tableName string) (*TableSchema, error) {
 }
 
 // BuildTableQuery constructs the SQL query, count query, and arguments for a table based on filtering and sorting parameters, WITHOUT limit/offset.
-func BuildTableQuery(db *sql.DB, tableName string, params RowQueryParams) (string, string, []interface{}, *TableSchema, error) {
+func BuildTableQuery(db Queryer, tableName string, params RowQueryParams) (string, string, []interface{}, *TableSchema, error) {
 	quotedTable := QuoteIdentifier(tableName)
 
 	// Validate orderby is one of the columns to prevent SQL injection
@@ -379,7 +415,7 @@ func BuildTableQuery(db *sql.DB, tableName string, params RowQueryParams) (strin
 
 	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM %s%s", quotedTable, wherePart)
 	selectFields := "*"
-	if len(schema.PrimaryKey) == 0 && !schema.WithoutRowid {
+	if len(schema.PrimaryKey) == 0 && !schema.WithoutRowid && !schema.IsVirtual {
 		selectFields = "rowid, *"
 	}
 	selectQuery := fmt.Sprintf("SELECT %s FROM %s%s", selectFields, quotedTable, wherePart)
@@ -397,7 +433,7 @@ func BuildTableQuery(db *sql.DB, tableName string, params RowQueryParams) (strin
 }
 
 // GetTableRows returns a page of rows with optional sorting and filtering.
-func GetTableRows(db *sql.DB, tableName string, params RowQueryParams) (*RowResult, error) {
+func GetTableRows(db Queryer, tableName string, params RowQueryParams) (*RowResult, error) {
 	selectQuery, countQuery, args, schema, err := BuildTableQuery(db, tableName, params)
 	if err != nil {
 		return nil, err

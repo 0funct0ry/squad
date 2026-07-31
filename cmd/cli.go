@@ -8,6 +8,7 @@ import (
 
 	"github.com/0funct0ry/squad/internal/cli"
 	"github.com/0funct0ry/squad/internal/db"
+	"github.com/0funct0ry/squad/internal/vtab"
 	"github.com/spf13/cobra"
 )
 
@@ -16,6 +17,7 @@ type cliConfig struct {
 	ReadOnlyPragma bool
 	LogLevel       string
 	restFlags
+	moduleFlags
 }
 
 var cliCfg cliConfig
@@ -47,6 +49,16 @@ var cliCmd = &cobra.Command{
 
 		readOnly := !cliCfg.Write && cliCfg.ReadOnlyPragma
 
+		modulesRoot := cliCfg.ModulesRoot
+		if modulesRoot == "" {
+			if resolvedPath == ":memory:" || strings.HasPrefix(resolvedPath, "file:") {
+				modulesRoot = "."
+			} else {
+				modulesRoot = filepath.Dir(resolvedPath)
+			}
+		}
+		vtab.Configure(cliCfg.Modules, modulesRoot)
+
 		database, err := db.OpenDB(resolvedPath, readOnly)
 		if err != nil {
 			fmt.Printf("Error: failed to open database: %v\n", err)
@@ -55,7 +67,7 @@ var cliCmd = &cobra.Command{
 		defer database.Close()
 
 		interactive := inlineSQL == "" && cli.IsStdinTerminal()
-		state := cli.NewState(database, resolvedPath, cliCfg.Write, interactive, readOnly, cliCfg.RestPort, cliCfg.RestBindAddr)
+		state := cli.NewState(database, resolvedPath, cliCfg.Write, interactive, readOnly, cliCfg.RestPort, cliCfg.RestBindAddr, cliCfg.Modules, modulesRoot)
 
 		if err := cli.Run(state, inlineSQL); err != nil {
 			fmt.Printf("Error: %v\n", err)
@@ -70,4 +82,5 @@ func init() {
 	cliCmd.Flags().BoolVarP(&cliCfg.ReadOnlyPragma, "read-only-pragma", "R", true, "Open SQLite with mode=ro when not --write")
 	cliCmd.Flags().StringVarP(&cliCfg.LogLevel, "log-level", "l", "info", "Log level (debug/info/warn/error)")
 	registerRestFlags(cliCmd.Flags(), &cliCfg.restFlags)
+	registerModuleFlags(cliCmd.Flags(), &cliCfg.moduleFlags)
 }

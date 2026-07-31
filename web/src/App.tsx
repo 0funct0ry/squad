@@ -19,7 +19,8 @@ import {
   AudioLines,
   LibraryBig,
   Upload,
-  Columns3
+  Columns3,
+  Puzzle
 } from 'lucide-react';
 import {
   sniffHex,
@@ -39,6 +40,7 @@ import SandboxManagePage from './components/SandboxManagePage';
 import ExamplesPicker, { type ExampleMeta } from './components/ExamplesPicker';
 import ConfirmModal from './components/ConfirmModal';
 import RestTab from './components/RestTab';
+import ModulesTab from './components/ModulesTab';
 import RowGrid from './components/RowGrid';
 import ImportModal from './components/ImportModal';
 import XmlExportModal, { defaultXmlExportOptions, type XmlExportOptions } from './components/XmlExportModal';
@@ -71,6 +73,7 @@ interface TableInfo {
   name: string;
   type: 'table' | 'view';
   rowCount: number;
+  isVirtual?: boolean;
 }
 
 interface ColumnInfo {
@@ -510,6 +513,12 @@ export default function App() {
   const [meta, setMeta] = useState<MetaData | null>(null);
   const [tables, setTables] = useState<TableInfo[]>([]);
   const [selectedTable, setSelectedTable] = useState<TableInfo | null>(null);
+  const [mounts, setMounts] = useState<{ alias: string; module: string }[]>([]);
+  // null = not known yet (still loading) — kept out of the tab bar until
+  // resolved, same as when it resolves to false, so there's no flash of a
+  // tab that immediately disappears.
+  const [restEnabled, setRestEnabled] = useState<boolean | null>(null);
+  const [modulesEnabled, setModulesEnabled] = useState<boolean | null>(null);
   const [schema, setSchema] = useState<TableSchema | null>(null);
   const [schemaError, setSchemaError] = useState<string | null>(null);
   const [blobModal, setBlobModal] = useState<{ column: string; hex: string; type: BlobMediaType } | null>(null);
@@ -835,6 +844,31 @@ export default function App() {
 
   const handleSandboxDownload = (id: string) => {
     window.location.href = `/api/sandbox/dbs/${id}/download`;
+  };
+
+  const fetchMounts = () => {
+    // /api/modules always works (unlike /api/modules/mounts, which 403s
+    // when --modules is off) and returns enabled + mounts in one call —
+    // exactly what's needed to decide whether the Modules tab should even
+    // appear in the tab bar.
+    apiFetch('/modules')
+      .then((res) => res.json())
+      .then((body) => {
+        if (body.ok) {
+          setModulesEnabled(body.data.enabled);
+          setMounts(body.data.mounts ?? []);
+        }
+      })
+      .catch(() => {});
+  };
+
+  const fetchRestEnabled = () => {
+    apiFetch('/rest/status')
+      .then((res) => res.json())
+      .then((body) => {
+        if (body.ok) setRestEnabled(body.data.enabled);
+      })
+      .catch(() => {});
   };
 
   const fetchMetaAndTables = () => {
@@ -1598,6 +1632,8 @@ export default function App() {
         if (res) fetchMetaAndTables();
       })
       .catch(() => fetchMetaAndTables());
+    fetchMounts();
+    fetchRestEnabled();
 
     // Always top-level /api/examples — not scoped per sandbox database.
     fetch('/api/examples')
@@ -1607,6 +1643,13 @@ export default function App() {
       })
       .catch(() => {});
   }, []);
+
+  // If the active tab is REST/Modules and its flag resolves to off, fall
+  // back to Data rather than leaving the panel stuck on a now-hidden tab.
+  useEffect(() => {
+    if (activeTab === 'rest' && restEnabled === false) setActiveTab('data');
+    if (activeTab === 'modules' && modulesEnabled === false) setActiveTab('data');
+  }, [activeTab, restEnabled, modulesEnabled]);
 
   // Refetch when entering Info tab
   useEffect(() => {
@@ -1620,6 +1663,7 @@ export default function App() {
   useEffect(() => {
     if (sandboxMode && activeDbId) {
       fetchMetaAndTables();
+      fetchMounts();
     }
   }, [activeDbId]);
 
@@ -2150,17 +2194,53 @@ export default function App() {
                       : 'hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300'
                   }`}
                 >
-                  <span className="flex items-center gap-2">
-                    <span className="text-slate-400 dark:text-slate-500">
-                      {t.type === 'view' ? '◫' : '▤'}
-                    </span>
-                    <span className="font-medium font-mono text-xs">{t.name}</span>
+                  <span className="flex items-center gap-2 min-w-0">
+                    {t.isVirtual ? (
+                      <span
+                        className="shrink-0"
+                        title="Virtual table (backed by a module, e.g. CREATE VIRTUAL TABLE ... USING)"
+                      >
+                        <Puzzle className="w-3.5 h-3.5 text-violet-500 dark:text-violet-400" />
+                      </span>
+                    ) : (
+                      <span className="text-slate-400 dark:text-slate-500 shrink-0">
+                        {t.type === 'view' ? '◫' : '▤'}
+                      </span>
+                    )}
+                    <span className="font-medium font-mono text-xs truncate">{t.name}</span>
                   </span>
-                  <span className="text-xs text-slate-400 font-mono">{t.rowCount.toLocaleString()}</span>
+                  <span className="text-xs text-slate-400 font-mono shrink-0">{t.rowCount.toLocaleString()}</span>
                 </div>
               ))
             )}
           </nav>
+
+          {mounts.length > 0 && (
+            <>
+              <div className="px-3 pt-1 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 border-t border-slate-100 dark:border-slate-800">
+                Mounted
+              </div>
+              <nav className="px-2 pb-2 text-sm space-y-0.5">
+                {mounts.map((m) => (
+                  <div
+                    key={m.alias}
+                    onClick={() => setSelectedTable({ name: m.alias, type: 'table', rowCount: 0 })}
+                    className={`flex items-center justify-between px-2 py-1.5 rounded-md cursor-pointer ${
+                      selectedTable?.name === m.alias
+                        ? 'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-300'
+                        : 'hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300'
+                    }`}
+                  >
+                    <span className="flex items-center gap-2">
+                      <span className="text-slate-400 dark:text-slate-500">⇢</span>
+                      <span className="font-medium font-mono text-xs">{m.alias}</span>
+                    </span>
+                    <span className="text-xs text-slate-400 font-mono">{m.module}</span>
+                  </div>
+                ))}
+              </nav>
+            </>
+          )}
         </aside>
 
         {/* ============ MAIN CONTENT ============ */}
@@ -2174,7 +2254,12 @@ export default function App() {
               { id: 'editor', label: 'Table Editor' },
               { id: 'seed', label: 'Seed' },
               { id: 'export', label: 'Export' },
-              { id: 'rest', label: 'REST' },
+              // REST/Modules only appear once their flag is confirmed on —
+              // relaunching without --rest/--modules hides the tab
+              // entirely rather than showing a disabled banner, so a
+              // reader isn't confronted with capabilities they can't use.
+              ...(restEnabled ? [{ id: 'rest', label: 'REST' }] : []),
+              ...(modulesEnabled ? [{ id: 'modules', label: 'Modules' }] : []),
               { id: 'info', label: 'Info' },
             ].map((tab) => (
               <button
@@ -3790,6 +3875,14 @@ export default function App() {
               <RestTab
                 selectedTable={selectedTable}
                 onToast={(message, type) => showToast(message, type)}
+              />
+            )}
+
+            {/* MODULES PANEL */}
+            {activeTab === 'modules' && (
+              <ModulesTab
+                onToast={(message, type) => showToast(message, type)}
+                onMountsChanged={fetchMounts}
               />
             )}
 
