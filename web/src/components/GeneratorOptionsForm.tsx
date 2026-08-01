@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import GeneratorPicker, { type OptionField, type GeneratorMeta } from './GeneratorPicker';
+import TemplateEditor from './TemplateEditor';
 
 export type { OptionField, GeneratorMeta };
 
@@ -10,6 +11,14 @@ interface GeneratorOptionsFormProps {
   siblingColumns?: string[];
   catalog?: GeneratorMeta[];
   affinity?: string;
+  // Column + generator name for the current row, and a preview callback —
+  // only needed when schema includes a `template`-key textarea field (the
+  // jsonTemplate/template generators), to power TemplateEditor's toolbar and
+  // live single-row preview. Optional so this component still works standalone
+  // (e.g. inside WrappedGeneratorField, which has no single-row preview).
+  columnName?: string;
+  generatorName?: string;
+  onPreviewSingleRow?: () => Promise<Record<string, any> | null>;
 }
 
 const inputClass =
@@ -106,13 +115,18 @@ export default function GeneratorOptionsForm({
   siblingColumns,
   catalog,
   affinity,
+  columnName,
+  generatorName,
+  onPreviewSingleRow,
 }: GeneratorOptionsFormProps) {
   if (!schema || schema.length === 0) {
     return <span className="text-slate-300 dark:text-slate-700">—</span>;
   }
 
+  const hasTemplateField = schema.some((f) => f.kind === 'textarea' && f.key === 'template');
+
   return (
-    <div className="flex items-center gap-2 flex-wrap">
+    <div className={hasTemplateField ? 'flex flex-col gap-3 flex-1 min-h-0' : 'flex items-center gap-2 flex-wrap'}>
       {schema.map((field) => {
         const value = values?.[field.key];
 
@@ -190,28 +204,59 @@ export default function GeneratorOptionsForm({
             onChange(field.key, next);
           };
           return (
-            <div key={field.key} className="flex flex-col gap-0.5">
+            <div key={field.key} className="flex flex-col gap-1 w-full">
               <span className="text-slate-400">{field.label}</span>
-              <div className="flex flex-wrap gap-1 max-w-xs">
-                {(siblingColumns || []).map((col) => (
-                  <label
-                    key={col}
-                    className="flex items-center gap-1 px-1 py-0.5 rounded border border-slate-200 dark:border-slate-800 text-slate-500"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selected.includes(col)}
-                      onChange={() => toggle(col)}
-                    />
-                    {col}
-                  </label>
-                ))}
+              <div className="flex flex-wrap gap-1.5">
+                {(siblingColumns || []).map((col) => {
+                  const isSelected = selected.includes(col);
+                  return (
+                    <button
+                      key={col}
+                      type="button"
+                      onClick={() => toggle(col)}
+                      className={`font-mono text-[11.5px] px-2.5 py-1 rounded-full border cursor-pointer select-none ${
+                        isSelected
+                          ? 'bg-indigo-50 dark:bg-indigo-500/15 border-indigo-300 dark:border-indigo-500/40 text-indigo-600 dark:text-indigo-400 font-semibold'
+                          : 'bg-white dark:bg-slate-950 border-slate-300 dark:border-slate-700 text-slate-500'
+                      }`}
+                    >
+                      {col}
+                    </button>
+                  );
+                })}
               </div>
             </div>
           );
         }
 
         if (field.kind === 'textarea') {
+          // jsonTemplate/template are the only generators whose textarea field
+          // key is "template" — everything else (cases/transitions/gaps, etc.)
+          // keeps the plain textarea.
+          if (field.key === 'template' && columnName && generatorName && onPreviewSingleRow) {
+            const referencedColumns: string[] = Array.isArray(values?.columns) ? (values.columns as string[]) : [];
+            const toggleColumn = (col: string) => {
+              const next = referencedColumns.includes(col)
+                ? referencedColumns.filter((c) => c !== col)
+                : [...referencedColumns, col];
+              onChange('columns', next);
+            };
+            return (
+              <div key={field.key} className="flex flex-col gap-1 w-full flex-1 min-h-0">
+                <span className="text-slate-400">{field.label}</span>
+                <TemplateEditor
+                  columnName={columnName}
+                  generatorName={generatorName}
+                  value={(value as string) ?? ''}
+                  onChange={(next) => onChange(field.key, next)}
+                  referencedColumns={referencedColumns}
+                  onPreview={onPreviewSingleRow}
+                  allColumns={siblingColumns || []}
+                  onToggleColumn={toggleColumn}
+                />
+              </div>
+            );
+          }
           return (
             <label key={field.key} className="flex flex-col gap-0.5 text-slate-400 w-full max-w-sm">
               {field.label}

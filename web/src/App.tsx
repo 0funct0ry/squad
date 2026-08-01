@@ -27,8 +27,7 @@ import {
   type BlobMediaType,
 } from './lib/blobMedia';
 import { EditorView } from '@codemirror/view';
-import GeneratorPicker from './components/GeneratorPicker';
-import GeneratorOptionsForm from './components/GeneratorOptionsForm';
+import SeedPanel from './components/SeedPanel';
 import SandboxEmptyState from './components/SandboxEmptyState';
 import DbSwitcher from './components/DbSwitcher';
 import SandboxManagePage from './components/SandboxManagePage';
@@ -485,7 +484,6 @@ export default function App() {
   const [seedPlanError, setSeedPlanError] = useState<string | null>(null);
   const [seedSelections, setSeedSelections] = useState<Record<string, SeedColumnSelection>>({});
   const [seedOverrides, setSeedOverrides] = useState<Record<string, boolean>>({});
-  const [generatorPickerColumn, setGeneratorPickerColumn] = useState<string | null>(null);
   const [recentlyUsedGenerators, setRecentlyUsedGenerators] = useState<string[]>([]);
   const [seedGeneratorSamples, setSeedGeneratorSamples] = useState<Record<string, string>>({});
   const [seedCount, setSeedCount] = useState<number>(1000);
@@ -1286,6 +1284,20 @@ export default function App() {
     }
   };
 
+  // Used by the template editor's live single-row preview strip — reuses the
+  // same dry-run seed endpoint as "Preview 5 rows", just with count=1 and no
+  // loading/error state of its own (TemplateEditor debounces its calls).
+  const previewSingleRow = async (_colName: string): Promise<Record<string, any> | null> => {
+    if (!selectedTable) return null;
+    try {
+      const data = await seedTable(selectedTable.name, { count: 1, dryRun: true, columns: buildSeedColumnsPayload() });
+      const rows = (data as { rows: Record<string, any>[] }).rows || [];
+      return rows[0] || null;
+    } catch {
+      return null;
+    }
+  };
+
   const handleSeedInsert = async () => {
     if (!selectedTable || !isWrite) return;
     setSeedInsertLoading(true);
@@ -1612,7 +1624,6 @@ export default function App() {
     setSeedPreviewRows(null);
     setSeedError(null);
     setSeedPlanLoading(true);
-    setGeneratorPickerColumn(null);
     setRecentlyUsedGenerators([]);
     setSeedGeneratorSamples({});
 
@@ -3222,177 +3233,45 @@ export default function App() {
 
             {/* SEED PANEL */}
             {activeTab === 'seed' && selectedTable && (
-              <section className="space-y-4">
-                <h3 className="font-semibold text-slate-900 dark:text-white">
-                  Seed <span className="font-mono text-indigo-500">{selectedTable.name}</span> with fake data
-                </h3>
-                <p className="text-sm text-slate-500 -mt-2">Generators auto-suggested from column name &amp; type.</p>
+              <section className="flex flex-col flex-1 min-h-0 space-y-4">
+                <div className="shrink-0">
+                  <h3 className="font-semibold text-slate-900 dark:text-white">
+                    Seed <span className="font-mono text-indigo-500">{selectedTable.name}</span> with fake data
+                  </h3>
+                  <p className="text-sm text-slate-500">Generators auto-suggested from column name &amp; type. Select a column to configure it.</p>
+                </div>
 
                 {!isWrite && (
-                  <div className="rounded-lg border border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-300 text-sm px-4 py-2.5 max-w-4xl">
+                  <div className="shrink-0 rounded-lg border border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-300 text-sm px-4 py-2.5 max-w-4xl">
                     Write mode is required to seed data. Relaunch with <code className="font-mono">--write</code>.
                   </div>
                 )}
 
-                {seedPlanLoading && <p className="text-sm text-slate-400">Loading seed plan…</p>}
-                {seedPlanError && <p className="text-sm text-rose-500">{seedPlanError}</p>}
-
-                {seedPlan && (
-                  <>
-                    <div className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden bg-white dark:bg-slate-900 max-w-4xl">
-                      <table className="w-full text-sm">
-                        <thead className="bg-slate-100 dark:bg-slate-800/60 text-slate-500 text-left">
-                          <tr>
-                            <th className="px-3 py-2 font-medium">Column</th>
-                            <th className="px-3 py-2 font-medium">Generator</th>
-                            <th className="px-3 py-2 font-medium">Options</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-xs">
-                          {seedPlan.columns.map((col) => {
-                            const overridden = !!seedOverrides[col.name];
-                            const active = !col.skip || overridden;
-                            const sel = seedSelections[col.name];
-
-                            if (col.skip && !overridden) {
-                              return (
-                                <tr key={col.name} className="opacity-50">
-                                  <td className="px-3 py-2 font-mono">{col.name}</td>
-                                  <td className="px-3 py-2 text-slate-400 italic" colSpan={2}>
-                                    skipped — {col.reason}{' '}
-                                    <button
-                                      onClick={() => toggleSeedOverride(col)}
-                                      className="ml-2 not-italic underline text-indigo-500 hover:text-indigo-600 cursor-pointer"
-                                    >
-                                      Override
-                                    </button>
-                                  </td>
-                                </tr>
-                              );
-                            }
-
-                            return (
-                              <tr key={col.name}>
-                                <td className="px-3 py-2 font-mono align-top">
-                                  {col.name}
-                                  {col.skip && (
-                                    <button
-                                      onClick={() => toggleSeedOverride(col)}
-                                      className="block mt-1 not-italic underline text-slate-400 hover:text-indigo-500 cursor-pointer"
-                                    >
-                                      Skip again
-                                    </button>
-                                  )}
-                                </td>
-                                <td className="px-3 py-2 align-top">
-                                  <button
-                                    type="button"
-                                    onClick={() => setGeneratorPickerColumn(col.name)}
-                                    disabled={!isWrite || !active}
-                                    className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white font-mono text-xs outline-none text-left disabled:opacity-50 disabled:cursor-not-allowed hover:border-indigo-400 flex flex-col"
-                                  >
-                                    <span>{sel?.generator || '—'}</span>
-                                    {sel?.generator && seedGeneratorSamples[`${col.name}:${sel.generator}`] && (
-                                      <span className="font-normal text-slate-400 truncate max-w-[10rem]">
-                                        → {seedGeneratorSamples[`${col.name}:${sel.generator}`]}
-                                      </span>
-                                    )}
-                                  </button>
-                                </td>
-                                <td className="px-3 py-2 align-top">
-                                  {sel?.generator === 'foreignKey' || sel?.generator === 'enumFromColumn' ? (
-                                    <span className="text-slate-400">
-                                      {sel.options?.table}.{sel.options?.column}
-                                    </span>
-                                  ) : (
-                                    <GeneratorOptionsForm
-                                      schema={generatorMetaByName(sel?.generator || '')?.optionsSchema || []}
-                                      values={sel?.options || {}}
-                                      onChange={(key, value) => updateSeedOption(col.name, key, value)}
-                                      siblingColumns={seedPlan.columns.map((c) => c.name)}
-                                      catalog={seedPlan.generatorCatalog}
-                                      affinity={sqliteAffinity(col.type)}
-                                    />
-                                  )}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-
-                    <div className="flex items-center gap-3 flex-wrap">
-                      <label className="text-sm flex items-center gap-2">
-                        Rows
-                        <input
-                          type="number"
-                          min={1}
-                          max={100000}
-                          value={seedCount}
-                          onChange={(e) => handleSeedCountChange(e.target.value)}
-                          disabled={!isWrite}
-                          className="font-mono w-28 px-2 py-1 rounded border border-slate-300 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white outline-none"
-                        />
-                      </label>
-                      {seedCount >= 100000 && (
-                        <span className="text-xs text-amber-500">clamped to 100,000</span>
-                      )}
-                      <button
-                        onClick={handleSeedPreview}
-                        disabled={!isWrite || seedPreviewLoading}
-                        className={`px-3 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 text-sm ${
-                          isWrite ? 'hover:bg-slate-100 dark:hover:bg-slate-850 cursor-pointer' : 'opacity-50 cursor-not-allowed'
-                        }`}
-                      >
-                        {seedPreviewLoading ? 'Previewing…' : 'Preview 5 rows'}
-                      </button>
-                      <button
-                        onClick={handleSeedInsert}
-                        disabled={!isWrite || seedInsertLoading}
-                        title={isWrite ? 'Insert seeded rows' : 'Write mode required'}
-                        className={`px-3 py-1.5 rounded-md bg-indigo-600 text-white text-sm ${
-                          isWrite && !seedInsertLoading ? 'hover:bg-indigo-700 cursor-pointer' : 'opacity-50 cursor-not-allowed'
-                        }`}
-                      >
-                        {seedInsertLoading ? 'Inserting…' : 'Insert'}
-                      </button>
-                    </div>
-
-                    {seedError && (
-                      <p className="text-sm text-rose-500 max-w-4xl">{seedError}</p>
-                    )}
-
-                    {seedPreviewRows && (
-                      <div className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-auto bg-white dark:bg-slate-900 max-w-4xl">
-                        <table className="w-full text-xs font-mono">
-                          <thead className="bg-slate-100 dark:bg-slate-800/60 text-slate-500 text-left">
-                            <tr>
-                              {Object.keys(seedPreviewRows[0] || {}).map((col) => (
-                                <th key={col} className="px-3 py-2 font-medium">{col}</th>
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                            {seedPreviewRows.map((row, i) => (
-                              <tr key={i}>
-                                {Object.keys(seedPreviewRows[0] || {}).map((col) => (
-                                  <td key={col} className="px-3 py-2 text-slate-700 dark:text-slate-300">
-                                    {row[col] === null || row[col] === undefined ? (
-                                      <span className="text-slate-400 italic">NULL</span>
-                                    ) : (
-                                      String(row[col])
-                                    )}
-                                  </td>
-                                ))}
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                  </>
-                )}
+                <SeedPanel
+                  tableName={selectedTable.name}
+                  isWrite={isWrite}
+                  seedPlan={seedPlan}
+                  seedPlanLoading={seedPlanLoading}
+                  seedPlanError={seedPlanError}
+                  seedSelections={seedSelections}
+                  seedOverrides={seedOverrides}
+                  seedGeneratorSamples={seedGeneratorSamples}
+                  seedCount={seedCount}
+                  seedPreviewRows={seedPreviewRows}
+                  seedPreviewLoading={seedPreviewLoading}
+                  seedInsertLoading={seedInsertLoading}
+                  seedError={seedError}
+                  recentlyUsedGenerators={recentlyUsedGenerators}
+                  toggleSeedOverride={toggleSeedOverride}
+                  updateSeedGenerator={updateSeedGenerator}
+                  updateSeedOption={updateSeedOption}
+                  generatorMetaByName={generatorMetaByName}
+                  sqliteAffinity={sqliteAffinity}
+                  handleSeedCountChange={handleSeedCountChange}
+                  handleSeedPreview={handleSeedPreview}
+                  handleSeedInsert={handleSeedInsert}
+                  previewSingleRow={previewSingleRow}
+                />
               </section>
             )}
 
@@ -3813,22 +3692,6 @@ export default function App() {
           </div>
         </div>
       )}
-
-      {/* GENERATOR PICKER MODAL */}
-      {generatorPickerColumn && seedPlan && (() => {
-        const col = seedPlan.columns.find((c) => c.name === generatorPickerColumn);
-        const sel = seedSelections[generatorPickerColumn];
-        return (
-          <GeneratorPicker
-            catalog={seedPlan.generatorCatalog}
-            currentGenerator={sel?.generator || ''}
-            targetAffinity={col ? sqliteAffinity(col.type) : 'TEXT'}
-            recentlyUsed={recentlyUsedGenerators}
-            onSelect={(name) => updateSeedGenerator(generatorPickerColumn, name)}
-            onClose={() => setGeneratorPickerColumn(null)}
-          />
-        );
-      })()}
 
       {examplesPickerOpen && examplesList && (
         <ExamplesPicker
