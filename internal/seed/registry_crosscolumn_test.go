@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -267,6 +268,102 @@ func TestJSONTemplate_RejectsContextDependentNestedGenerator(t *testing.T) {
 	}
 	if _, err := gen.GenerateRow(); err == nil {
 		t.Error("expected an error for a nested generator that requires row/table context")
+	}
+}
+
+func TestJSONTemplate_ShorthandTokensEquivalentToLongForm(t *testing.T) {
+	schema := simpleSchema("username", "payload")
+	specs := map[string]ColumnSpec{
+		"username": {Generator: "oneOf", Options: map[string]any{"values": "alice,bob"}},
+		"payload":  {Generator: "jsonTemplate", Options: map[string]any{"columns": []string{"username"}, "template": `{"user": "{{$username}}", "n": {{@int({"min":1,"max":1})}}}`}},
+	}
+	gen, err := NewRowGenerator(nil, schema, specs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := gen.GenerateRow()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := row["payload"].(string)
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		t.Fatalf("expected valid JSON from shorthand tokens, got %q: %v", raw, err)
+	}
+	if parsed["user"] != row["username"] {
+		t.Errorf("expected {{$username}} to resolve like {{column:username}}: got %v, want %v", parsed["user"], row["username"])
+	}
+	if parsed["n"] != float64(1) {
+		t.Errorf("expected {{@int(...)}} to resolve like {{generator:int(...)}}: got %v", parsed["n"])
+	}
+}
+
+func TestTemplate_ProducesPlainStringWithoutJSONValidation(t *testing.T) {
+	schema := simpleSchema("username", "bio")
+	specs := map[string]ColumnSpec{
+		"username": {Generator: "oneOf", Options: map[string]any{"values": "alice,alicia"}},
+		"bio":      {Generator: "template", Options: map[string]any{"columns": []string{"username"}, "template": `Hi, I'm {{column:username}}! Say "hello" back.`}},
+	}
+	gen, err := NewRowGenerator(nil, schema, specs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := gen.GenerateRow()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf(`Hi, I'm %v! Say "hello" back.`, row["username"])
+	if row["bio"] != want {
+		t.Errorf("got %q, want %q", row["bio"], want)
+	}
+}
+
+func TestTemplate_ShorthandGeneratorToken(t *testing.T) {
+	schema := simpleSchema("username", "handle")
+	specs := map[string]ColumnSpec{
+		"username": {Generator: "oneOf", Options: map[string]any{"values": "alice,alicia"}},
+		"handle":   {Generator: "template", Options: map[string]any{"columns": []string{"username"}, "template": `{{$username}}@{{@domainName}}`}},
+	}
+	gen, err := NewRowGenerator(nil, schema, specs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := gen.GenerateRow()
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle := row["handle"].(string)
+	wantPrefix := fmt.Sprintf("%v@", row["username"])
+	if !strings.HasPrefix(handle, wantPrefix) || strings.Contains(handle, "{{") {
+		t.Errorf("expected shorthand tokens substituted, got %q", handle)
+	}
+}
+
+func TestTemplate_RejectsContextDependentNestedGenerator(t *testing.T) {
+	schema := simpleSchema("payload")
+	specs := map[string]ColumnSpec{
+		"payload": {Generator: "template", Options: map[string]any{"template": `id={{@formula}}`}},
+	}
+	gen, err := NewRowGenerator(nil, schema, specs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gen.GenerateRow(); err == nil {
+		t.Error("expected an error for a nested generator that requires row/table context")
+	}
+}
+
+func TestTemplate_UnknownColumnReferenceErrors(t *testing.T) {
+	schema := simpleSchema("payload")
+	specs := map[string]ColumnSpec{
+		"payload": {Generator: "template", Options: map[string]any{"template": `{{$doesNotExist}}`}},
+	}
+	gen, err := NewRowGenerator(nil, schema, specs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gen.GenerateRow(); err == nil {
+		t.Error("expected an error for an unknown column reference")
 	}
 }
 

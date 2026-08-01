@@ -218,6 +218,9 @@ func (g *RowGenerator) generateValue(colName string, spec ColumnSpec, rowSoFar m
 	if spec.Generator == "jsonTemplate" {
 		return g.evalJSONTemplate(colName, spec, rowSoFar)
 	}
+	if spec.Generator == "template" {
+		return g.evalTemplate(colName, spec, rowSoFar)
+	}
 	if spec.Generator == "geohash" {
 		return g.evalGeohash(spec, rowSoFar)
 	}

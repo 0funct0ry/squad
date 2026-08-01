@@ -30,7 +30,7 @@ func TestGuidAndUuid_ShapeParity(t *testing.T) {
 // expectedGeneratorCount pins the total number of registered generators
 // (including foreignKey) after the M6a registry expansion. Update this
 // alongside any future registry_*.go additions.
-const expectedGeneratorCount = 226
+const expectedGeneratorCount = 227
 
 func TestAvailableGeneratorsIncludesForeignKey(t *testing.T) {
 	names := AvailableGenerators()
@@ -108,6 +108,7 @@ func TestGenerateAllRegisteredGenerators(t *testing.T) {
 		"checksumOfColumns":     true,
 		"slugFromColumn":        true,
 		"jsonTemplate":          true,
+		"template":              true,
 		"geohash":               true,
 		"nullWithProbability":   true,
 		// user-authored value-list generators with no sensible generic

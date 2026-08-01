@@ -28,6 +28,7 @@ var crossColumnGeneratorNames = map[string]bool{
 	"checksumOfColumns":   true,
 	"slugFromColumn":      true,
 	"jsonTemplate":        true,
+	"template":            true,
 }
 
 // crossColumnExtraGenerators registers the 6 new cross-column generators
@@ -58,8 +59,12 @@ func crossColumnExtraGenerators() []GeneratorDef {
 			{Key: "suffixLength", Label: "Suffix length", Kind: OptKindInt, Default: 0, Description: "0 = no suffix; >0 appends that many random alphanumeric chars"},
 		}, Fn: nil},
 		{Name: "jsonTemplate", Group: "cross-column", Description: "Fills a JSON template with sibling-column and nested-generator tokens", Affinities: []string{"TEXT", "BLOB"}, OptionsSchema: []OptionField{
-			{Key: "columns", Label: "Referenced columns", Kind: OptKindColumns, Description: "Sibling columns referenced by {{column:name}} tokens"},
-			{Key: "template", Label: "Template", Kind: OptKindTextarea, Required: true, Description: "JSON text with {{column:name}} and {{generator:name(options)}} tokens"},
+			{Key: "columns", Label: "Referenced columns", Kind: OptKindColumns, Description: "Sibling columns referenced by {{column:name}} / {{$name}} tokens"},
+			{Key: "template", Label: "Template", Kind: OptKindTextarea, Required: true, Description: "JSON text with {{column:name}}/{{$name}} and {{generator:name(options)}}/{{@name(options)}} tokens"},
+		}, Fn: nil},
+		{Name: "template", Group: "cross-column", Description: "Fills a plain string template with sibling-column and nested-generator tokens (no JSON validation, unlike jsonTemplate)", Affinities: []string{"TEXT"}, OptionsSchema: []OptionField{
+			{Key: "columns", Label: "Referenced columns", Kind: OptKindColumns, Description: "Sibling columns referenced by {{column:name}} / {{$name}} tokens"},
+			{Key: "template", Label: "Template", Kind: OptKindTextarea, Required: true, Description: "Free text with {{column:name}}/{{$name}} and {{generator:name(options)}}/{{@name(options)}} tokens"},
 		}, Fn: nil},
 	}
 }
@@ -399,29 +404,34 @@ func (g *RowGenerator) evalSlugFromColumn(colName string, spec ColumnSpec, rowSo
 }
 
 // ---------------------------------------------------------------------
-// jsonTemplate
+// jsonTemplate / template (shared token substitution)
 // ---------------------------------------------------------------------
 
-var jsonTemplateTokenRe = regexp.MustCompile(`\{\{(column|generator):([a-zA-Z0-9_]+)(\([^)]*\))?\}\}`)
+// templateTokenRe matches both the explicit "{{column:name}}" /
+// "{{generator:name(opts)}}" forms and the shorthand "{{$name}}" (column) /
+// "{{@name(opts)}}" (generator) forms. Exactly one of the two capture pairs
+// (kindWord, sigil) is populated per match.
+var templateTokenRe = regexp.MustCompile(`\{\{(?:(column|generator):|(\$|@))([a-zA-Z0-9_]+)(\([^)]*\))?\}\}`)
 
-func (g *RowGenerator) evalJSONTemplate(colName string, spec ColumnSpec, rowSoFar map[string]any) (any, error) {
-	tmpl := optString(spec.Options, "template", "")
-	if tmpl == "" {
-		return nil, fmt.Errorf("jsonTemplate column %q: missing options.template", colName)
-	}
-
+// evalTemplateTokens substitutes {{column:name}}/{{$name}} and
+// {{generator:name(options)}}/{{@name(options)}} tokens in tmpl, using
+// already-generated sibling values from rowSoFar for column tokens and a
+// stateless Generate(...) call for generator tokens. genLabel identifies the
+// calling generator ("jsonTemplate" or "template") for error messages.
+func (g *RowGenerator) evalTemplateTokens(genLabel, colName, tmpl string, rowSoFar map[string]any) (string, error) {
 	var innerErr error
-	result := jsonTemplateTokenRe.ReplaceAllStringFunc(tmpl, func(match string) string {
+	result := templateTokenRe.ReplaceAllStringFunc(tmpl, func(match string) string {
 		if innerErr != nil {
 			return match
 		}
-		parts := jsonTemplateTokenRe.FindStringSubmatch(match)
-		kind, name, argsRaw := parts[1], parts[2], parts[3]
+		parts := templateTokenRe.FindStringSubmatch(match)
+		kindWord, sigil, name, argsRaw := parts[1], parts[2], parts[3], parts[4]
+		isColumn := kindWord == "column" || sigil == "$"
 
-		if kind == "column" {
+		if isColumn {
 			v, ok := rowSoFar[name]
 			if !ok {
-				innerErr = fmt.Errorf("jsonTemplate column %q: unknown column reference %q", colName, name)
+				innerErr = fmt.Errorf("%s column %q: unknown column reference %q", genLabel, colName, name)
 				return match
 			}
 			return fmt.Sprintf("%v", v)
@@ -432,7 +442,7 @@ func (g *RowGenerator) evalJSONTemplate(colName string, spec ColumnSpec, rowSoFa
 		// for FK/formula/stateful/cross-column/nullWithProbability/enumFromColumn.
 		if !Exists(name) || name == ForeignKeyGeneratorName || name == "enumFromColumn" ||
 			name == "nullWithProbability" || crossColumnGeneratorNames[name] || statefulGeneratorNames[name] {
-			innerErr = fmt.Errorf("jsonTemplate column %q: generator %q cannot be used as a nested token (requires row/table context)", colName, name)
+			innerErr = fmt.Errorf("%s column %q: generator %q cannot be used as a nested token (requires row/table context)", genLabel, colName, name)
 			return match
 		}
 
@@ -441,23 +451,43 @@ func (g *RowGenerator) evalJSONTemplate(colName string, spec ColumnSpec, rowSoFa
 			argsJSON := strings.TrimSuffix(strings.TrimPrefix(argsRaw, "("), ")")
 			if argsJSON != "" {
 				if err := json.Unmarshal([]byte(argsJSON), &opts); err != nil {
-					innerErr = fmt.Errorf("jsonTemplate column %q: invalid options for generator %q: %w", colName, name, err)
+					innerErr = fmt.Errorf("%s column %q: invalid options for generator %q: %w", genLabel, colName, name, err)
 					return match
 				}
 			}
 		}
 		v, err := Generate(name, "TEXT", opts)
 		if err != nil {
-			innerErr = fmt.Errorf("jsonTemplate column %q: generator %q: %w", colName, name, err)
+			innerErr = fmt.Errorf("%s column %q: generator %q: %w", genLabel, colName, name, err)
 			return match
 		}
 		return fmt.Sprintf("%v", v)
 	})
 	if innerErr != nil {
-		return nil, innerErr
+		return "", innerErr
+	}
+	return result, nil
+}
+
+func (g *RowGenerator) evalJSONTemplate(colName string, spec ColumnSpec, rowSoFar map[string]any) (any, error) {
+	tmpl := optString(spec.Options, "template", "")
+	if tmpl == "" {
+		return nil, fmt.Errorf("jsonTemplate column %q: missing options.template", colName)
+	}
+	result, err := g.evalTemplateTokens("jsonTemplate", colName, tmpl, rowSoFar)
+	if err != nil {
+		return nil, err
 	}
 	if !json.Valid([]byte(result)) {
 		return nil, fmt.Errorf("jsonTemplate column %q: substituted output is not valid JSON: %s", colName, result)
 	}
 	return result, nil
+}
+
+func (g *RowGenerator) evalTemplate(colName string, spec ColumnSpec, rowSoFar map[string]any) (any, error) {
+	tmpl := optString(spec.Options, "template", "")
+	if tmpl == "" {
+		return nil, fmt.Errorf("template column %q: missing options.template", colName)
+	}
+	return g.evalTemplateTokens("template", colName, tmpl, rowSoFar)
 }
