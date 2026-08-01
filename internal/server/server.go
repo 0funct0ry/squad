@@ -294,6 +294,7 @@ func (s *Server) setupSingleDBRoutes(api *gin.RouterGroup) {
 
 	s.registerExamplesRoutes(api)
 	s.registerModulesRoutes(api)
+	s.registerFunctionsRoutes(api)
 }
 
 func (s *Server) handleMeta(c *gin.Context) {

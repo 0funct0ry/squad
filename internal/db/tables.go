@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 )
 
@@ -476,10 +475,24 @@ func GetTableRows(db Queryer, tableName string, params RowQueryParams) (*RowResu
 
 	resultRows := [][]interface{}{}
 	for rows.Next() {
+		// Scan non-BLOB columns into interface{} so the driver's own decoded
+		// type (int64/float64/string/nil) comes through untouched. The
+		// previous implementation scanned every column into raw []byte and
+		// re-parsed the text with strconv.ParseInt/ParseFloat to guess
+		// whether it "looked like" a number — but that round trip silently
+		// reformats any TEXT value that happens to parse as a number (e.g.
+		// a zero-padded code like "00008" from a generated column or a
+		// PAD_LEFT/format-string result comes back as the bare integer 8,
+		// dropping the leading zeros the query itself preserved). BLOB
+		// columns still scan as raw bytes so they can be hex-encoded below.
 		dest := make([]interface{}, len(cols))
-		rawValues := make([][]byte, len(cols))
+		blobDest := make([][]byte, len(cols))
 		for i := range dest {
-			dest[i] = &rawValues[i]
+			if colIsBlob[i] {
+				dest[i] = &blobDest[i]
+			} else {
+				dest[i] = new(interface{})
+			}
 		}
 
 		if err := rows.Scan(dest...); err != nil {
@@ -487,20 +500,20 @@ func GetTableRows(db Queryer, tableName string, params RowQueryParams) (*RowResu
 		}
 
 		rowVals := make([]interface{}, len(cols))
-		for i, raw := range rawValues {
-			if raw == nil {
-				rowVals[i] = nil
-			} else if colIsBlob[i] {
-				rowVals[i] = hex.EncodeToString(raw)
-			} else {
-				valStr := string(raw)
-				if valInt, err := strconv.ParseInt(valStr, 10, 64); err == nil {
-					rowVals[i] = valInt
-				} else if valFloat, err := strconv.ParseFloat(valStr, 64); err == nil {
-					rowVals[i] = valFloat
+		for i := range cols {
+			if colIsBlob[i] {
+				if blobDest[i] == nil {
+					rowVals[i] = nil
 				} else {
-					rowVals[i] = valStr
+					rowVals[i] = hex.EncodeToString(blobDest[i])
 				}
+				continue
+			}
+			switch v := (*dest[i].(*interface{})).(type) {
+			case []byte:
+				rowVals[i] = string(v)
+			default:
+				rowVals[i] = v
 			}
 		}
 		resultRows = append(resultRows, rowVals)

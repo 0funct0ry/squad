@@ -21,6 +21,7 @@ var dotCommandNames = []string{
 	".stats", ".explain", ".plan", ".bookmark", ".bookmarks", ".shell", ".sh",
 	".watch", ".open", ".backup", ".clone", ".seed", ".diff", ".constraints",
 	".size", ".stat", ".repeat", ".modules", ".mounts", ".mount", ".unmount",
+	".functions",
 }
 
 const helpText = `.help                     show this message
@@ -71,6 +72,10 @@ const helpText = `.help                     show this message
 .mounts                   list active virtual table mounts
 .mount MODULE ALIAS FLAGS...  mount MODULE under ALIAS, e.g. .mount csv x --file data.csv (--modules)
 .unmount ALIAS            drop an active mount
+.functions                list curated SQL function categories with counts
+.functions CATEGORY       list a category's functions with signature + description
+.functions NAME           show one function's signature/description/example
+.functions NAME --try ARG...  call NAME(ARG...) and print the result
 `
 
 // dispatchDotCommand parses and executes a dot-command line. ".echo" and
@@ -118,6 +123,10 @@ func (s *State) dispatchDotCommand(line string) {
 	}
 	if trimmed == ".mount" || strings.HasPrefix(trimmed, ".mount ") {
 		s.cmdMount(strings.TrimSpace(strings.TrimPrefix(trimmed, ".mount")))
+		return
+	}
+	if trimmed == ".functions" || strings.HasPrefix(trimmed, ".functions ") {
+		s.cmdFunctions(strings.TrimSpace(strings.TrimPrefix(trimmed, ".functions")))
 		return
 	}
 

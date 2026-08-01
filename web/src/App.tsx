@@ -20,7 +20,8 @@ import {
   LibraryBig,
   Upload,
   Columns3,
-  Puzzle
+  Puzzle,
+  Sigma
 } from 'lucide-react';
 import {
   sniffHex,
@@ -32,6 +33,7 @@ import { basicSetup } from 'codemirror';
 import { sql as sqlLanguage } from '@codemirror/lang-sql';
 import { EditorState, Compartment } from '@codemirror/state';
 import { EditorView, keymap } from '@codemirror/view';
+import { udfCompletionSource } from './lib/udfCompletion';
 import GeneratorPicker from './components/GeneratorPicker';
 import GeneratorOptionsForm from './components/GeneratorOptionsForm';
 import SandboxEmptyState from './components/SandboxEmptyState';
@@ -41,6 +43,7 @@ import ExamplesPicker, { type ExampleMeta } from './components/ExamplesPicker';
 import ConfirmModal from './components/ConfirmModal';
 import RestTab from './components/RestTab';
 import ModulesTab from './components/ModulesTab';
+import FunctionBrowserModal from './components/FunctionBrowserModal';
 import RowGrid from './components/RowGrid';
 import ImportModal from './components/ImportModal';
 import XmlExportModal, { defaultXmlExportOptions, type XmlExportOptions } from './components/XmlExportModal';
@@ -302,11 +305,13 @@ function SqlEditor({ value, onChange, onRun, theme, editorViewRef }: SqlEditorPr
   useEffect(() => {
     if (!containerRef.current) return;
 
+    const sql = sqlLanguage();
     const startState = EditorState.create({
       doc: value,
       extensions: [
         basicSetup,
-        sqlLanguage(),
+        sql,
+        sql.language.data.of({ autocomplete: udfCompletionSource }),
         themeCompartment.of(theme === 'dark' ? darkTheme : lightTheme),
         keymap.of([
           {
@@ -923,6 +928,7 @@ export default function App() {
   const [examplesList, setExamplesList] = useState<ExampleMeta[] | null>(null);
   const [examplesPickerOpen, setExamplesPickerOpen] = useState(false);
   const [pendingExampleSlug, setPendingExampleSlug] = useState<string | null>(null);
+  const [functionBrowserOpen, setFunctionBrowserOpen] = useState(false);
 
   const setEditorContents = (text: string) => {
     setSqlValue(text);
@@ -2797,6 +2803,14 @@ export default function App() {
                             </button>
                           )}
                           <button
+                            onClick={() => setFunctionBrowserOpen(true)}
+                            className="px-2.5 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 font-medium text-xs flex items-center gap-1 cursor-pointer text-slate-700 dark:text-slate-300 italic"
+                            title="Function browser"
+                          >
+                            <Sigma className="w-3.5 h-3.5 not-italic" />
+                            fx
+                          </button>
+                          <button
                             onClick={runQueryFromEditor}
                             disabled={queryLoading}
                             className="px-3 py-1.5 rounded-md bg-indigo-600 text-white hover:bg-indigo-500 disabled:bg-indigo-400 font-medium text-xs flex items-center gap-1.5 cursor-pointer disabled:cursor-not-allowed"
@@ -4193,6 +4207,21 @@ export default function App() {
           examples={examplesList}
           onSelect={handleSelectExample}
           onClose={() => setExamplesPickerOpen(false)}
+        />
+      )}
+
+      {functionBrowserOpen && (
+        <FunctionBrowserModal
+          onToast={(message, type) => showToast(message, type)}
+          isWrite={isWrite}
+          onInsert={(snippet) => {
+            const view = editorViewRef.current;
+            if (!view) return;
+            const { from, to } = view.state.selection.main;
+            view.dispatch({ changes: { from, to, insert: snippet } });
+            view.focus();
+          }}
+          onClose={() => setFunctionBrowserOpen(false)}
         />
       )}
 

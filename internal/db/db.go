@@ -49,12 +49,27 @@ func WrapConn(conn *sql.Conn) Queryer {
 // called (i.e. --modules was passed), so this is a no-op by default.
 var RegisterModulesHook func() error
 
+// RegisterUDFHook is called once at the top of every OpenDB call, before
+// sql.Open, the same way RegisterModulesHook is. cmd/ sets this to
+// udf.RegisterAll in an init(). Unlike modules, the curated UDF library
+// (internal/udf, M10b) is always-on — no enable flag gates it — but the
+// indirection still avoids internal/db needing to import internal/udf
+// directly, and udf.RegisterAll is itself sync.Once-guarded since
+// modernc.org/sqlite's function registration is process-global and errors
+// on a duplicate name.
+var RegisterUDFHook func() error
+
 // OpenDB opens a SQLite database using modernc.org/sqlite.
 // If readOnly is true, it opens the database in read-only mode using mode=ro DSN parameter.
 func OpenDB(path string, readOnly bool) (*sql.DB, error) {
 	if RegisterModulesHook != nil {
 		if err := RegisterModulesHook(); err != nil {
 			return nil, fmt.Errorf("failed to register virtual table modules: %w", err)
+		}
+	}
+	if RegisterUDFHook != nil {
+		if err := RegisterUDFHook(); err != nil {
+			return nil, fmt.Errorf("failed to register SQL functions: %w", err)
 		}
 	}
 
