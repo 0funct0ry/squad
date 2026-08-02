@@ -1,0 +1,80 @@
+version: 2
+
+project_name: squad
+
+before:
+  hooks:
+    - make web
+
+builds:
+  - id: squad
+    main: ./main.go
+    binary: squad
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X github.com/0funct0ry/squad/cmd.Version={{.Version}} -X github.com/0funct0ry/squad/cmd.CommitSHA={{.ShortCommit}}
+
+archives:
+  - id: squad
+    ids:
+      - squad
+    name_template: "squad_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^Merge'
+  groups:
+    - title: "Features"
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: "Fixes"
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: "Other"
+      order: 999
+
+brews:
+  - name: squad
+    repository:
+      owner: 0funct0ry
+      name: homebrew-squad
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/0funct0ry/squad"
+    description: "A single-binary, web-based SQLite client"
+    license: "MIT"
+
+scoops:
+  - name: squad
+    repository:
+      owner: 0funct0ry
+      name: scoop-squad
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/0funct0ry/squad"
+    description: "A single-binary, web-based SQLite client"
+    license: "MIT"
+
+release:
+  github:
+    owner: 0funct0ry
+    name: squad

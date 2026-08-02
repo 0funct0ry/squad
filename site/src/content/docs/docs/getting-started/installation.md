@@ -4,7 +4,42 @@ description: How to install squad.
 ---
 
 squad ships as a single statically linked binary with no runtime
-dependencies. There is currently one supported install path.
+dependencies. Choose whichever install path fits your platform.
+
+## Homebrew
+
+```bash
+brew install 0funct0ry/squad/squad
+```
+
+## curl install script
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/0funct0ry/squad/main/scripts/install.sh | sh
+```
+
+Installs to `/usr/local/bin` (or `$HOME/.local/bin` if that isn't writable)
+without requiring `sudo`. Verifies the downloaded archive against the
+release's `checksums.txt` before installing.
+
+## Docker
+
+```bash
+docker run --rm -p 7071:7071 -v $(pwd):/data ghcr.io/0funct0ry/squad:latest /data/your.db
+```
+
+## Scoop (Windows)
+
+```powershell
+scoop bucket add squad https://github.com/0funct0ry/scoop-squad
+scoop install squad
+```
+
+## Download a release binary
+
+Download the archive for your platform from the
+[GitHub Releases page](https://github.com/0funct0ry/squad/releases),
+extract it, and place the `squad` binary on your `PATH`.
 
 ## Install with Go
 
@@ -33,6 +68,3 @@ via linker flags.
 ```bash
 squad version
 ```
-
-No packaged binaries (Homebrew, apt, standalone release archives) exist yet
-— `go install` or building from source are the only options for now.

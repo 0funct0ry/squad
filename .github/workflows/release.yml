@@ -1,0 +1,105 @@
+# release.yml — manually triggered release pipeline.
+#
+# Required repo secrets:
+#   HOMEBREW_TAP_GITHUB_TOKEN — a PAT with write access to both
+#     0funct0ry/homebrew-squad and 0funct0ry/scoop-squad, used by
+#     goreleaser's `brews:`/`scoops:` blocks in .goreleaser.yaml.
+#   GITHUB_TOKEN is provided automatically by Actions; no setup needed.
+#
+# Trigger manually:
+#   gh workflow run release.yml -f version=vX.Y.Z
+#
+# There is intentionally no push.tags trigger — the tag is created and
+# pushed by this workflow itself, after validating the version format
+# and that the tag does not already exist.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (vMAJOR.MINOR.PATCH)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate version format
+        run: |
+          echo "${{ github.event.inputs.version }}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || {
+            echo "Invalid version format: ${{ github.event.inputs.version }}"
+            exit 1
+          }
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check tag doesn't already exist
+        run: |
+          if git rev-parse "${{ github.event.inputs.version }}" >/dev/null 2>&1; then
+            echo "Tag ${{ github.event.inputs.version }} already exists"
+            exit 1
+          fi
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.4'
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build web assets
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test -v ./...
+
+      - name: Create and push tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${{ github.event.inputs.version }}"
+          git push origin "${{ github.event.inputs.version }}"
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+
+  smoke-test:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download linux/amd64 archive
+        run: |
+          curl -fsSL -o squad.tar.gz \
+            "https://github.com/0funct0ry/squad/releases/download/${{ github.event.inputs.version }}/squad_linux_amd64.tar.gz"
+          tar -xzf squad.tar.gz
+
+      - name: Run against a fixture db and check /api/meta
+        run: |
+          sqlite3 fixture.db "CREATE TABLE t (id INTEGER PRIMARY KEY);"
+          ./squad fixture.db --addr 127.0.0.1 --port 7071 &
+          for i in $(seq 1 20); do
+            curl -fsS http://127.0.0.1:7071/api/meta >/dev/null 2>&1 && break
+            sleep 0.5
+          done
+          body=$(curl -fsS http://127.0.0.1:7071/api/meta)
+          echo "$body"
+          echo "$body" | grep -q '"ok":true'

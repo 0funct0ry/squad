@@ -2,6 +2,10 @@
   <img src="assets/banner.png" alt="squad — a single-binary, web-based SQLite client" width="100%">
 </p>
 
+<p align="center">
+  <a href="https://github.com/0funct0ry/squad/releases"><img src="https://img.shields.io/github/v/release/0funct0ry/squad" alt="Release"></a>
+</p>
+
 > A minimal, single-binary, dual mode (CLI + WebUI) SQLite client.
 
 `squad` is a lightweight developer tool that lets you explore, query, edit, and export SQLite databases from a modern browser—without installing a desktop application or running Docker.
@@ -99,9 +103,50 @@ Optionally expose database tables as REST endpoints.
 
 # Installation
 
-Download the appropriate binary for your platform and place it somewhere on your `PATH`.
+**Homebrew** (macOS/Linux):
 
-No installation, runtime, or database server is required.
+```bash
+brew install 0funct0ry/squad/squad
+```
+
+**curl install script**:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/0funct0ry/squad/main/scripts/install.sh | sh
+```
+
+**Docker**:
+
+```bash
+docker run --rm -p 7071:7071 -v $(pwd):/data ghcr.io/0funct0ry/squad:latest /data/your.db
+```
+
+**Scoop** (Windows):
+
+```powershell
+scoop bucket add squad https://github.com/0funct0ry/scoop-squad
+scoop install squad
+```
+
+**Download a release binary**: grab the archive for your platform from the
+[Releases page](https://github.com/0funct0ry/squad/releases) and place the
+`squad` binary on your `PATH`.
+
+**go install**:
+
+```bash
+go install github.com/0funct0ry/squad@latest
+```
+
+**Build from source**:
+
+```bash
+git clone https://github.com/0funct0ry/squad
+cd squad
+make build
+```
+
+No installation, runtime, or database server is required beyond the binary itself.
 
 ---
 
@@ -134,7 +179,7 @@ squad ./database.db --port 8080
 Bind to a custom address:
 
 ```bash
-squad ./database.db --host 0.0.0.0
+squad ./database.db --addr 0.0.0.0
 ```
 
 ---
@@ -151,7 +196,7 @@ Common flags:
 |--------------|---------------------------|
 | `--write`    | Enable data modifications |
 | `--rest`     | Enable REST endpoints     |
-| `--host`     | Server bind address       |
+| `--addr`     | Server bind address       |
 | `--port`     | HTTP port                 |
 | `--readonly` | Force read-only mode      |
 | `--help`     | Show help                 |
@@ -246,7 +291,8 @@ Write access requires explicit user opt-in.
 
 Contributions, feature requests, and bug reports are welcome.
 
-Please open an issue before submitting large changes.
+Please open an issue before submitting large changes. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for build/test instructions and the PR process.
 
 ---
 

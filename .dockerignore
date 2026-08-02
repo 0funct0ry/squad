@@ -1,0 +1,10 @@
+.git
+web/node_modules
+web/dist
+site
+internal-docs
+bin
+*.db*
+.claude
+.idea
+.vscode
