@@ -141,7 +141,7 @@ func TestDBExecWriteScoping(t *testing.T) {
 // TestIntegrationBeforeHookAborts is the milestone's true integration test:
 // a real sqlite connection, a real hook-backed trigger, a real INSERT.
 func TestIntegrationBeforeHookAborts(t *testing.T) {
-	Configure("sync", false, true)
+	Configure("sync", false, true, true)
 	d := openTestDB(t)
 	if _, err := d.Exec(`CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT, email TEXT, slug TEXT)`); err != nil {
 		t.Fatal(err)
@@ -184,7 +184,7 @@ func TestIntegrationBeforeHookAborts(t *testing.T) {
 
 // TestIntegrationAfterHookDerivedColumn covers the spec's slug scenario.
 func TestIntegrationAfterHookDerivedColumn(t *testing.T) {
-	Configure("sync", false, true)
+	Configure("sync", false, true, true)
 	d := openTestDB(t)
 	if _, err := d.Exec(`CREATE TABLE people(id INTEGER PRIMARY KEY, name TEXT, slug TEXT)`); err != nil {
 		t.Fatal(err)
@@ -224,8 +224,8 @@ func TestIntegrationAfterHookDerivedColumn(t *testing.T) {
 }
 
 func TestAsyncRejectsBeforeHooks(t *testing.T) {
-	Configure("async", false, true)
-	defer Configure("sync", false, true)
+	Configure("async", false, true, true)
+	defer Configure("sync", false, true, true)
 	d := openTestDB(t)
 	if _, err := d.Exec(`CREATE TABLE t(id INTEGER PRIMARY KEY)`); err != nil {
 		t.Fatal(err)
@@ -240,8 +240,8 @@ func TestAsyncRejectsBeforeHooks(t *testing.T) {
 }
 
 func TestAsyncDoesNotBlockTheWrite(t *testing.T) {
-	Configure("async", false, true)
-	defer Configure("sync", false, true)
+	Configure("async", false, true, true)
+	defer Configure("sync", false, true, true)
 	d := openTestDB(t)
 	if _, err := d.Exec(`CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT)`); err != nil {
 		t.Fatal(err)
@@ -286,7 +286,7 @@ func TestCompileCheckRejectsSyntaxErrors(t *testing.T) {
 }
 
 func TestRunLogCapAt200(t *testing.T) {
-	Configure("sync", false, true)
+	Configure("sync", false, true, true)
 	d := openTestDB(t)
 	if err := Init(d); err != nil {
 		t.Fatal(err)

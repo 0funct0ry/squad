@@ -44,12 +44,16 @@ type Server struct {
 	modulesRoot    string
 	mountStore     *vtab.MountStore
 
-	// Lua trigger hooks (M10c). The /api/hooks* routes are always mounted
-	// (there is no --hooks opt-in flag; only mutation is gated on --write),
-	// but handlers report these two resolved process flags in the Hooks
-	// tab's status strip and pass them into every hook run.
-	hookMode string
-	allowNet bool
+	// Lua trigger hooks (M10c), gated behind --hooks like --modules.
+	// GET /api/hooks and GET /api/hooks/:id stay always accessible (mirrors
+	// GET /api/modules) so the web UI can decide whether to show the Hooks
+	// tab at all; every other route is refused with HOOKS_DISABLED while
+	// hooksEnabled is false. hookMode/allowNet are the resolved process
+	// flags reported in the Hooks tab's status strip and passed into every
+	// hook run, independent of whether the feature is enabled.
+	hooksEnabled bool
+	hookMode     string
+	allowNet     bool
 }
 
 // ConfigureHooks records the resolved --hook-mode/--allow-net flags for the
@@ -60,6 +64,13 @@ func (s *Server) ConfigureHooks(mode string, allowNet bool) {
 	}
 	s.hookMode = mode
 	s.allowNet = allowNet
+}
+
+// EnableHooks turns on the --hooks routes for this server (create/update/
+// delete/test/log). Called right after construction when --hooks was
+// passed, mirroring EnableModules.
+func (s *Server) EnableHooks() {
+	s.hooksEnabled = true
 }
 
 // EnableModules turns on the --modules routes for this server, recording the

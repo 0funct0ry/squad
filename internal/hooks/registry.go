@@ -18,7 +18,17 @@ var registerErr error
 // wired through db.RegisterHooksHook (set in cmd/hooks.go's init) exactly
 // like udf.RegisterAll and vtab.Register. sync.Once-guarded because a
 // duplicate name is an error.
+//
+// A no-op unless Configure(..., enabled: true) was already called (mirrors
+// vtab.Register's internal enabled gate) — when --hooks was not passed,
+// __squad_invoke_hook is never registered, so a table with a pre-existing
+// hook-backed trigger fails its next write with a "no such function" SQL
+// error rather than silently running Lua. That's intentional: the feature
+// is meant to be fully off, not just hidden from the UI/API/CLI surface.
 func RegisterAll() error {
+	if !Enabled() {
+		return nil
+	}
 	registerOnce.Do(func() {
 		registerErr = sqlite.RegisterScalarFunction(invokeFuncName, 3, invokeHook)
 	})

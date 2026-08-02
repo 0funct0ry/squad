@@ -17,6 +17,10 @@ import (
 // JSON with spaces and quotes that the generic whitespace tokenizer would
 // shred.
 func (s *State) cmdHooks(rest string) {
+	if !s.HooksEnabled {
+		s.shellError(fmt.Errorf("Lua trigger hooks are off; relaunch with --hooks to enable them"))
+		return
+	}
 	tokens, err := tokenizeMountArgs(rest)
 	if err != nil {
 		s.shellError(err)

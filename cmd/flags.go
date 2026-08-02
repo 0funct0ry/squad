@@ -35,6 +35,6 @@ type restFlags struct {
 
 func registerRestFlags(fs *pflag.FlagSet, r *restFlags) {
 	fs.BoolVarP(&r.Rest, "rest", "r", false, "Enable auto REST endpoints for tables")
-	fs.IntVar(&r.RestPort, "rest-port", 7072, "Port for the separate REST listener (distinct from --port)")
-	fs.StringVar(&r.RestBindAddr, "rest-bind-addr", "127.0.0.1", "Bind address for the REST listener")
+	fs.IntVarP(&r.RestPort, "rest-port", "P", 7072, "Port for the separate REST listener (distinct from --port)")
+	fs.StringVarP(&r.RestBindAddr, "rest-bind-addr", "B", "127.0.0.1", "Bind address for the REST listener")
 }

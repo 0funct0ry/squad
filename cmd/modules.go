@@ -14,8 +14,8 @@ type moduleFlags struct {
 }
 
 func registerModuleFlags(fs *pflag.FlagSet, m *moduleFlags) {
-	fs.BoolVar(&m.Modules, "modules", false, "Enable virtual table modules (see internal-docs/VTABS.md)")
-	fs.StringVar(&m.ModulesRoot, "modules-root", "", "Confinement root for file-reading modules (default: the open database's directory)")
+	fs.BoolVarP(&m.Modules, "modules", "m", false, "Enable virtual table modules (see internal-docs/VTABS.md)")
+	fs.StringVarP(&m.ModulesRoot, "modules-root", "M", "", "Confinement root for file-reading modules (default: the open database's directory)")
 }
 
 // init wires internal/db.OpenDB's registration hook to vtab.Register.

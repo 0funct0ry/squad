@@ -408,6 +408,7 @@ export default function App() {
   // tab that immediately disappears.
   const [restEnabled, setRestEnabled] = useState<boolean | null>(null);
   const [modulesEnabled, setModulesEnabled] = useState<boolean | null>(null);
+  const [hooksEnabled, setHooksEnabled] = useState<boolean | null>(null);
   const [schema, setSchema] = useState<TableSchema | null>(null);
   const [schemaError, setSchemaError] = useState<string | null>(null);
   const [blobModal, setBlobModal] = useState<{ column: string; hex: string; type: BlobMediaType } | null>(null);
@@ -758,6 +759,20 @@ export default function App() {
       .then((res) => res.json())
       .then((body) => {
         if (body.ok) setRestEnabled(body.data.enabled);
+      })
+      .catch(() => {});
+  };
+
+  // GET /hooks always 200s (mirrors GET /modules) and carries hooksEnabled
+  // regardless of --hooks, so the Hooks tab's visibility can be decided
+  // without a dedicated status endpoint. 404s harmlessly in sandbox mode,
+  // which mounts no /hooks routes at all — hooksEnabled just stays null,
+  // keeping the tab hidden there too.
+  const fetchHooksEnabled = () => {
+    apiFetch('/hooks')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body) => {
+        if (body && body.ok) setHooksEnabled(body.data.hooksEnabled);
       })
       .catch(() => {});
   };
@@ -1540,6 +1555,7 @@ export default function App() {
       .catch(() => fetchMetaAndTables());
     fetchMounts();
     fetchRestEnabled();
+    fetchHooksEnabled();
 
     // Always top-level /api/examples — not scoped per sandbox database.
     fetch('/api/examples')
@@ -1550,12 +1566,13 @@ export default function App() {
       .catch(() => {});
   }, []);
 
-  // If the active tab is REST/Modules and its flag resolves to off, fall
-  // back to Data rather than leaving the panel stuck on a now-hidden tab.
+  // If the active tab is REST/Modules/Hooks and its flag resolves to off,
+  // fall back to Data rather than leaving the panel stuck on a now-hidden tab.
   useEffect(() => {
     if (activeTab === 'rest' && restEnabled === false) setActiveTab('data');
     if (activeTab === 'modules' && modulesEnabled === false) setActiveTab('data');
-  }, [activeTab, restEnabled, modulesEnabled]);
+    if (activeTab === 'hooks' && hooksEnabled === false) setActiveTab('data');
+  }, [activeTab, restEnabled, modulesEnabled, hooksEnabled]);
 
   // Refetch when entering Info tab
   useEffect(() => {
@@ -2255,15 +2272,13 @@ export default function App() {
               { id: 'editor', label: 'Table Editor' },
               { id: 'seed', label: 'Seed' },
               { id: 'export', label: 'Export' },
-              // REST/Modules only appear once their flag is confirmed on —
-              // relaunching without --rest/--modules hides the tab
-              // entirely rather than showing a disabled banner, so a
+              // REST/Modules/Hooks only appear once their flag is confirmed
+              // on — relaunching without --rest/--modules/--hooks hides the
+              // tab entirely rather than showing a disabled banner, so a
               // reader isn't confronted with capabilities they can't use.
               ...(restEnabled ? [{ id: 'rest', label: 'REST' }] : []),
               ...(modulesEnabled ? [{ id: 'modules', label: 'Modules' }] : []),
-              // Hooks is always present: unlike --rest/--modules it has no
-              // enable flag, only a --write gate on mutation.
-              { id: 'hooks', label: 'Hooks' },
+              ...(hooksEnabled ? [{ id: 'hooks', label: 'Hooks' }] : []),
               { id: 'info', label: 'Info' },
             ].map((tab) => (
               <button

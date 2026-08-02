@@ -118,10 +118,15 @@ type State struct {
 	ModulesRoot    string
 	MountStore     *vtab.MountStore
 
+	// Lua trigger hooks (".hooks"). HooksEnabled mirrors --hooks; the
+	// dot-command refuses to do anything with a clear error when it's false
+	// (unlike the standalone `squad hooks` subcommand, which always works).
+	HooksEnabled bool
+
 	Quit bool
 }
 
-func NewState(database *sql.DB, path string, write, interactive, readOnly bool, restPort int, restBindAddr string, modulesEnabled bool, modulesRoot string) *State {
+func NewState(database *sql.DB, path string, write, interactive, readOnly bool, restPort int, restBindAddr string, modulesEnabled bool, modulesRoot string, hooksEnabled bool) *State {
 	mode := ModeList
 	headers := false
 	if interactive {
@@ -145,6 +150,7 @@ func NewState(database *sql.DB, path string, write, interactive, readOnly bool, 
 		ModulesEnabled:     modulesEnabled,
 		ModulesRoot:        modulesRoot,
 		MountStore:         vtab.NewMountStore(),
+		HooksEnabled:       hooksEnabled,
 	}
 }
 

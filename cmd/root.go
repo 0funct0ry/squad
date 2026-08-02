@@ -27,6 +27,7 @@ type Config struct {
 	restFlags
 	moduleFlags
 	hookFlags
+	HooksEnabled   bool
 	Write          bool
 	ReadOnlyPragma bool
 	Examples       bool
@@ -74,7 +75,7 @@ var rootCmd = &cobra.Command{
 			}
 		}
 		vtab.Configure(cfg.Modules, modulesRoot)
-		hooks.Configure(cfg.HookMode, cfg.AllowNet, cfg.Write)
+		hooks.Configure(cfg.HookMode, cfg.AllowNet, cfg.Write, cfg.HooksEnabled)
 
 		// Open the database
 		database, err := db.OpenDB(resolvedPath, readOnly)
@@ -106,6 +107,9 @@ var rootCmd = &cobra.Command{
 		srv := server.NewServer(database, resolvedPath, cfg.Write, cfg.Examples, cfg.Rest, cfg.RestBindAddr, cfg.RestPort, cfg.LogLevel)
 		if cfg.Modules {
 			srv.EnableModules(modulesRoot)
+		}
+		if cfg.HooksEnabled {
+			srv.EnableHooks()
 		}
 		addr := fmt.Sprintf("%s:%d", cfg.Addr, cfg.Port)
 		fmt.Printf("  address  : http://%s\n", addr)
@@ -158,6 +162,7 @@ func init() {
 	registerRestFlags(rootCmd.Flags(), &cfg.restFlags)
 	registerModuleFlags(rootCmd.Flags(), &cfg.moduleFlags)
 	registerHookFlags(rootCmd.Flags(), &cfg.hookFlags)
+	registerHooksEnableFlag(rootCmd.Flags(), &cfg.HooksEnabled)
 	rootCmd.Flags().BoolVarP(&cfg.Write, "write", "w", false, "Enable mutations (DDL, DML, write operations)")
 	rootCmd.Flags().BoolVarP(&cfg.ReadOnlyPragma, "read-only-pragma", "R", true, "Open SQLite with mode=ro when not --write")
 	rootCmd.Flags().BoolVarP(&cfg.Examples, "examples", "e", false, "Enable the canned example data-model library")

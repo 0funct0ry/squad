@@ -18,14 +18,30 @@ import (
 
 // hookFlags holds the --hook-mode/--allow-net flags shared between root,
 // `squad cli`, `squad sandbox`, and `squad hooks`, mirroring moduleFlags.
+// --hooks itself (the on/off switch) is deliberately NOT part of this
+// struct: root/cli/sandbox register it separately via
+// registerHooksEnableFlag, but the standalone `squad hooks` subcommand does
+// not register it at all — running `squad hooks ...` is itself explicit
+// intent to manage hooks and always works regardless of the flag.
 type hookFlags struct {
 	HookMode string
 	AllowNet bool
 }
 
 func registerHookFlags(fs *pflag.FlagSet, h *hookFlags) {
-	fs.StringVar(&h.HookMode, "hook-mode", "sync", "Lua trigger hook execution mode: sync (blocking, before hooks can abort a write) or async (fire-and-forget, after hooks only)")
-	fs.BoolVar(&h.AllowNet, "allow-net", false, "Allow hook scripts to make outbound HTTP requests via the Lua http module")
+	fs.StringVarP(&h.HookMode, "hook-mode", "H", "sync", "Lua trigger hook execution mode: sync (blocking, before hooks can abort a write) or async (fire-and-forget, after hooks only)")
+	fs.BoolVarP(&h.AllowNet, "allow-net", "n", false, "Allow hook scripts to make outbound HTTP requests via the Lua http module")
+}
+
+// registerHooksEnableFlag registers --hooks, the on/off switch for the whole
+// Lua trigger hooks feature (web Hooks tab, /api/hooks* routes, and squad
+// cli's .hooks dot-command). Without it, hooks.RegisterAll/Init are no-ops:
+// __squad_invoke_hook is never registered, so even a pre-existing hook
+// trigger fails its next write with "no such function" rather than quietly
+// keeping working. Registered on root/cli/sandbox only — never on the
+// standalone `squad hooks` subcommand itself, which always works.
+func registerHooksEnableFlag(fs *pflag.FlagSet, enabled *bool) {
+	fs.BoolVarP(enabled, "hooks", "k", false, "Enable Lua trigger hooks: web Hooks tab, /api/hooks* routes, and squad cli's .hooks dot-command (squad hooks always works without this flag)")
 }
 
 // init wires internal/db.OpenDB's hook-dispatcher registration to
@@ -137,7 +153,10 @@ func openForHooks(path string) (dbHandle, error) {
 		}
 	}
 	readOnly := !hooksCfg.Write && hooksCfg.ReadOnlyPragma
-	hooks.Configure(hooksCfg.HookMode, hooksCfg.AllowNet, hooksCfg.Write)
+	// enabled is always true here: running `squad hooks ...` is itself
+	// explicit intent, independent of --hooks (which this subcommand
+	// doesn't even register — see registerHooksEnableFlag's doc comment).
+	hooks.Configure(hooksCfg.HookMode, hooksCfg.AllowNet, hooksCfg.Write, true)
 
 	d, err := db.OpenDB(resolved, readOnly)
 	if err != nil {

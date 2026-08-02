@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,21 +11,39 @@ import (
 )
 
 // registerHooksRoutes wires M10c's Lua trigger-hook surface for the
-// single-DB flow. Unlike --modules, hooks have no enable flag: the routes are
-// always live, and only mutation (create/update/delete) is gated on --write,
-// exactly like the rest of the write surface. /test and /log stay available
-// in read-only mode so a user can dry-run and inspect hooks without
-// restarting.
+// single-DB flow. Like --modules, hooks are off by default: GET /api/hooks
+// and GET /api/hooks/:id stay always accessible (so the web UI can decide
+// whether to show the Hooks tab at all, mirroring GET /api/modules) but
+// every other route — create/update/delete, test, and log view/clear —
+// requires --hooks, on top of the existing --write gate for mutations.
 func (s *Server) registerHooksRoutes(api *gin.RouterGroup) {
 	h := api.Group("/hooks")
 	h.GET("", s.handleListHooks)
 	h.GET("/:id", s.handleGetHook)
-	h.POST("", s.WriteGateMiddleware("creating a hook"), s.handleCreateHook)
-	h.PATCH("/:id", s.WriteGateMiddleware("updating a hook"), s.handleUpdateHook)
-	h.DELETE("/:id", s.WriteGateMiddleware("deleting a hook"), s.handleDeleteHook)
-	h.POST("/:id/test", s.handleTestHook)
-	h.GET("/:id/log", s.handleHookLog)
-	h.DELETE("/:id/log", s.WriteGateMiddleware("clearing a hook's execution log"), s.handleClearHookLog)
+	h.POST("", s.HooksGateMiddleware("creating a hook"), s.WriteGateMiddleware("creating a hook"), s.handleCreateHook)
+	h.PATCH("/:id", s.HooksGateMiddleware("updating a hook"), s.WriteGateMiddleware("updating a hook"), s.handleUpdateHook)
+	h.DELETE("/:id", s.HooksGateMiddleware("deleting a hook"), s.WriteGateMiddleware("deleting a hook"), s.handleDeleteHook)
+	h.POST("/:id/test", s.HooksGateMiddleware("testing a hook"), s.handleTestHook)
+	h.GET("/:id/log", s.HooksGateMiddleware("viewing a hook's execution log"), s.handleHookLog)
+	h.DELETE("/:id/log", s.HooksGateMiddleware("clearing a hook's execution log"), s.WriteGateMiddleware("clearing a hook's execution log"), s.handleClearHookLog)
+}
+
+// HooksGateMiddleware refuses a route with HOOKS_DISABLED unless --hooks was
+// passed at launch, mirroring WriteGateMiddleware's READ_ONLY gate.
+func (s *Server) HooksGateMiddleware(op string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !s.hooksEnabled {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"ok": false,
+				"error": gin.H{
+					"code":    "HOOKS_DISABLED",
+					"message": fmt.Sprintf("%s requires --hooks; relaunch with --hooks to enable Lua trigger hooks", op),
+				},
+			})
+			return
+		}
+		c.Next()
+	}
 }
 
 func hookError(c *gin.Context, status int, code, message string) {
@@ -34,9 +53,10 @@ func hookError(c *gin.Context, status int, code, message string) {
 // hookStatus is the process state the Hooks tab's status strip renders.
 func (s *Server) hookStatus() gin.H {
 	return gin.H{
-		"hookMode": s.hookMode,
-		"write":    s.write,
-		"allowNet": s.allowNet,
+		"hooksEnabled": s.hooksEnabled,
+		"hookMode":     s.hookMode,
+		"write":        s.write,
+		"allowNet":     s.allowNet,
 	}
 }
 
@@ -69,10 +89,11 @@ func (s *Server) handleListHooks(c *gin.Context) {
 		views = append(views, hookSummary(h))
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true, "data": gin.H{
-		"hooks":    views,
-		"hookMode": s.hookMode,
-		"write":    s.write,
-		"allowNet": s.allowNet,
+		"hooks":        views,
+		"hooksEnabled": s.hooksEnabled,
+		"hookMode":     s.hookMode,
+		"write":        s.write,
+		"allowNet":     s.allowNet,
 	}})
 }
 

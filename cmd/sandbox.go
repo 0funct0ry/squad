@@ -24,9 +24,10 @@ type SandboxConfig struct {
 	restFlags
 	moduleFlags
 	hookFlags
-	Dir         string
-	MaxUploadMB int64
-	Examples    bool
+	HooksEnabled bool
+	Dir          string
+	MaxUploadMB  int64
+	Examples     bool
 }
 
 var sandboxCfg SandboxConfig
@@ -45,11 +46,12 @@ opened in sandbox mode is always read-write.`,
 func init() {
 	registerCommonFlags(sandboxCmd.Flags(), &sandboxCfg.commonFlags)
 	registerRestFlags(sandboxCmd.Flags(), &sandboxCfg.restFlags)
-	sandboxCmd.Flags().StringVar(&sandboxCfg.Dir, "dir", "", "Directory to store sandbox database files (env SQUAD_SANDBOX_DIR); defaults to a fresh temp dir")
-	sandboxCmd.Flags().Int64Var(&sandboxCfg.MaxUploadMB, "max-upload-size", 512, "Max upload size in MB for sandbox database files")
+	sandboxCmd.Flags().StringVarP(&sandboxCfg.Dir, "dir", "d", "", "Directory to store sandbox database files (env SQUAD_SANDBOX_DIR); defaults to a fresh temp dir")
+	sandboxCmd.Flags().Int64VarP(&sandboxCfg.MaxUploadMB, "max-upload-size", "S", 512, "Max upload size in MB for sandbox database files")
 	sandboxCmd.Flags().BoolVarP(&sandboxCfg.Examples, "examples", "e", false, "Enable the canned example data-model library")
 	registerModuleFlags(sandboxCmd.Flags(), &sandboxCfg.moduleFlags)
 	registerHookFlags(sandboxCmd.Flags(), &sandboxCfg.hookFlags)
+	registerHooksEnableFlag(sandboxCmd.Flags(), &sandboxCfg.HooksEnabled)
 	rootCmd.AddCommand(sandboxCmd)
 }
 
@@ -103,7 +105,7 @@ func runSandbox(cmd *cobra.Command, args []string) {
 	// Sandbox databases are always read-write; hooks honor the same flags,
 	// though the sandbox flow mounts no /api/hooks routes (there is no single
 	// fixed connection to attach them to).
-	hooks.Configure(sandboxCfg.HookMode, sandboxCfg.AllowNet, true)
+	hooks.Configure(sandboxCfg.HookMode, sandboxCfg.AllowNet, true, sandboxCfg.HooksEnabled)
 
 	registry := db.NewRegistry(absDir, sandboxCfg.MaxUploadMB*1024*1024)
 	if dirExplicitlySet {

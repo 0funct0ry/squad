@@ -16,11 +16,13 @@ var hooksRegisterOnce sync.Once
 
 // newHooksTestServer wires internal/db.OpenDB's hook-dispatcher registration
 // the same way cmd's init() does in production (this test binary doesn't
-// import cmd) and attaches hooks to a throwaway file database.
+// import cmd), attaches hooks to a throwaway file database, and enables the
+// --hooks surface (every test using this helper is exercising enabled
+// behavior; see TestHooksDisabledGate for the off-by-default case).
 func newHooksTestServer(t *testing.T, write bool) *Server {
 	t.Helper()
 	hooksRegisterOnce.Do(func() { db.RegisterHooksHook = hooks.RegisterAll })
-	hooks.Configure("sync", false, write)
+	hooks.Configure("sync", false, write, true)
 
 	path := t.TempDir() + "/hooks.db"
 	database, err := db.OpenDB(path, false)
@@ -34,7 +36,9 @@ func newHooksTestServer(t *testing.T, write bool) *Server {
 	if err := hooks.Init(database); err != nil {
 		t.Fatalf("hooks.Init: %v", err)
 	}
-	return NewServer(database, path, write, false, false, "127.0.0.1", 0, "info")
+	srv := NewServer(database, path, write, false, false, "127.0.0.1", 0, "info")
+	srv.EnableHooks()
+	return srv
 }
 
 func doHooksJSON(t *testing.T, ts *httptest.Server, method, path string, body any) (*http.Response, okEnvelope) {
@@ -315,8 +319,8 @@ func TestHooksClearLog(t *testing.T) {
 
 func TestHooksAsyncRejectsBeforeTiming(t *testing.T) {
 	srv := newHooksTestServer(t, true)
-	hooks.Configure("async", false, true)
-	defer hooks.Configure("sync", false, true)
+	hooks.Configure("async", false, true, true)
+	defer hooks.Configure("sync", false, true, true)
 	srv.ConfigureHooks("async", false)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -326,5 +330,59 @@ func TestHooksAsyncRejectsBeforeTiming(t *testing.T) {
 	})
 	if resp.StatusCode != http.StatusBadRequest || env.Error.Code != "VALIDATION" {
 		t.Fatalf("before hook under async = %d/%q, want 400/VALIDATION", resp.StatusCode, env.Error.Code)
+	}
+}
+
+// TestHooksDisabledGate verifies --hooks' off-by-default gate: GET /api/hooks
+// and GET /api/hooks/:id stay accessible (reporting hooksEnabled: false, the
+// same "list always visible" contract GET /api/modules has) while every
+// other route — create/update/delete, test, and log view/clear — is refused
+// with HOOKS_DISABLED, on a server that never called EnableHooks.
+func TestHooksDisabledGate(t *testing.T) {
+	hooksRegisterOnce.Do(func() { db.RegisterHooksHook = hooks.RegisterAll })
+
+	path := t.TempDir() + "/hooks.db"
+	database, err := db.OpenDB(path, false)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+	if _, err := database.Exec(`CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT, email TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	// Deliberately no srv.EnableHooks() call.
+	srv := NewServer(database, path, true, false, false, "127.0.0.1", 0, "info")
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp, env := doHooksJSON(t, ts, http.MethodGet, "/api/hooks", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/hooks with hooks disabled = %d, want 200", resp.StatusCode)
+	}
+	var list struct {
+		HooksEnabled bool `json:"hooksEnabled"`
+	}
+	if err := json.Unmarshal(env.Data, &list); err != nil {
+		t.Fatal(err)
+	}
+	if list.HooksEnabled {
+		t.Fatal("hooksEnabled should be false when --hooks was not passed")
+	}
+
+	for _, tc := range []struct {
+		method, path string
+		body         any
+	}{
+		{http.MethodPost, "/api/hooks", map[string]any{"table": "users", "event": "insert", "timing": "after", "source": "return true"}},
+		{http.MethodPatch, "/api/hooks/1", map[string]any{"name": "x"}},
+		{http.MethodDelete, "/api/hooks/1", nil},
+		{http.MethodPost, "/api/hooks/1/test", map[string]any{"new": map[string]any{}}},
+		{http.MethodGet, "/api/hooks/1/log", nil},
+		{http.MethodDelete, "/api/hooks/1/log", nil},
+	} {
+		resp, env := doHooksJSON(t, ts, tc.method, tc.path, tc.body)
+		if resp.StatusCode != http.StatusForbidden || env.Error.Code != "HOOKS_DISABLED" {
+			t.Fatalf("%s %s with hooks disabled = %d/%q, want 403/HOOKS_DISABLED", tc.method, tc.path, resp.StatusCode, env.Error.Code)
+		}
 	}
 }

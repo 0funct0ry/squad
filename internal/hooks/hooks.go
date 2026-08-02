@@ -109,6 +109,14 @@ type Config struct {
 	Mode     string // "sync" | "async"
 	AllowNet bool
 	Write    bool
+	// Enabled mirrors --hooks. Its zero value is false, so a process that
+	// never calls Configure (i.e. --hooks was not passed) leaves the whole
+	// feature off by default: RegisterAll skips registering
+	// __squad_invoke_hook, so any pre-existing hook-backed trigger fails
+	// with "no such function" on the next write rather than silently
+	// keeping working — a deliberate fail-closed choice so a restart
+	// without --hooks can't run Lua on a hunch of leftover configuration.
+	Enabled bool
 }
 
 var (
@@ -119,14 +127,16 @@ var (
 	hookCache = map[int64]Hook{}
 )
 
-// Configure records the resolved --hook-mode/--allow-net/--write flags. Call
-// before Init.
-func Configure(mode string, allowNet, write bool) {
+// Configure records the resolved --hooks/--hook-mode/--allow-net/--write
+// flags. Call before Init. Not calling it at all (i.e. --hooks was never
+// passed) is equivalent to Configure(..., enabled: false) since the package
+// var's zero value already has Enabled == false.
+func Configure(mode string, allowNet, write, enabled bool) {
 	if mode != "async" {
 		mode = "sync"
 	}
 	cfgMu.Lock()
-	cfg = Config{Mode: mode, AllowNet: allowNet, Write: write}
+	cfg = Config{Mode: mode, AllowNet: allowNet, Write: write, Enabled: enabled}
 	cfgMu.Unlock()
 }
 
@@ -139,6 +149,9 @@ func Current() Config {
 
 // Mode reports "sync" or "async".
 func Mode() string { return Current().Mode }
+
+// Enabled reports whether --hooks was passed for this process.
+func Enabled() bool { return Current().Enabled }
 
 // DB returns the database hooks are attached to (nil before Init).
 func DB() *sql.DB {
@@ -158,7 +171,15 @@ func setDB(d *sql.DB) {
 // deferred writer and, in async mode, the worker pool, and re-installs every
 // enabled hook's trigger. Safe to call when the DB is read-only — schema
 // creation is then skipped and hook management is limited to reads/tests.
+//
+// A no-op unless Configure(..., enabled: true) was already called — mirrors
+// RegisterAll's internal gate so callers (cmd/root.go, cmd/cli.go) can call
+// this unconditionally rather than wrapping every call site in `if
+// cfg.HooksEnabled`.
 func Init(d *sql.DB) error {
+	if !Enabled() {
+		return nil
+	}
 	setDB(d)
 	startDeferredWriter(d)
 	startAsyncWorkers()
