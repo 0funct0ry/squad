@@ -59,6 +59,14 @@ var RegisterModulesHook func() error
 // on a duplicate name.
 var RegisterUDFHook func() error
 
+// RegisterHooksHook is called once at the top of every OpenDB call, before
+// sql.Open, exactly like RegisterModulesHook/RegisterUDFHook. cmd/ sets it to
+// hooks.RegisterAll in an init(). It registers the single process-global
+// __squad_invoke_hook scalar function that every Lua-hook trigger body calls
+// (M10c); it is sync.Once-guarded on the hooks side, and registering the
+// function is harmless when no hooks are defined.
+var RegisterHooksHook func() error
+
 // OpenDB opens a SQLite database using modernc.org/sqlite.
 // If readOnly is true, it opens the database in read-only mode using mode=ro DSN parameter.
 func OpenDB(path string, readOnly bool) (*sql.DB, error) {
@@ -70,6 +78,11 @@ func OpenDB(path string, readOnly bool) (*sql.DB, error) {
 	if RegisterUDFHook != nil {
 		if err := RegisterUDFHook(); err != nil {
 			return nil, fmt.Errorf("failed to register SQL functions: %w", err)
+		}
+	}
+	if RegisterHooksHook != nil {
+		if err := RegisterHooksHook(); err != nil {
+			return nil, fmt.Errorf("failed to register hook dispatcher: %w", err)
 		}
 	}
 
@@ -92,7 +105,13 @@ func OpenDB(path string, readOnly bool) (*sql.DB, error) {
 	// Ping only takes effect on that single connection — _pragma in the DSN
 	// is applied by the driver to every connection it opens, which is what
 	// foreign key enforcement (and mode=ro) actually needs.
-	params := []string{"_pragma=foreign_keys(1)"}
+	// busy_timeout matters for M10c's Lua hooks: an `after` hook's db.exec
+	// (and squad's own execution-log write) is executed by a background
+	// goroutine on a second pooled connection right after the triggering
+	// statement commits, so the next statement the user runs can briefly
+	// collide with it. Without a busy timeout that surfaces as a spurious
+	// SQLITE_BUSY; with one, SQLite simply waits out the other writer.
+	params := []string{"_pragma=foreign_keys(1)", "_pragma=busy_timeout(5000)"}
 	if readOnly {
 		params = append(params, "mode=ro")
 	}
@@ -207,7 +226,9 @@ func GetDBMeta(db *sql.DB, dbPath string, write bool) (*DBMeta, error) {
 	rows, err := db.Query(`
 		SELECT type, COUNT(*) 
 		FROM sqlite_master 
-		WHERE (type = 'table' OR type = 'view') AND name NOT LIKE 'sqlite_%' 
+		WHERE (type = 'table' OR type = 'view')
+		  AND name NOT LIKE 'sqlite_%'
+		  AND name NOT LIKE '!_!_squad!_%' ESCAPE '!'
 		GROUP BY type
 	`)
 	if err != nil {

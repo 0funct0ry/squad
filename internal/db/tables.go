@@ -63,6 +63,10 @@ type ForeignKeyInfo struct {
 type TriggerInfo struct {
 	Name string `json:"name"`
 	SQL  string `json:"sql"`
+	// HookManaged is true for the __squad_hook_<id> triggers M10c installs to
+	// back a Lua hook — squad's own implementation detail, shown for
+	// transparency but managed from the Hooks tab, not edited/dropped here.
+	HookManaged bool `json:"hookManaged"`
 }
 
 type TableSchema struct {
@@ -226,12 +230,23 @@ func toFloat(v interface{}) (float64, bool) {
 	}
 }
 
+// hookTriggerPrefix matches internal/hooks.triggerName's "__squad_hook_<id>"
+// naming convention. Kept here rather than imported from internal/hooks to
+// avoid an import cycle (internal/hooks already depends on internal/db).
+const hookTriggerPrefix = "__squad_hook_"
+
+func isHookManagedTriggerName(name string) bool {
+	return strings.HasPrefix(name, hookTriggerPrefix)
+}
+
 // GetTables returns a list of tables and views with their row counts.
 func GetTables(db Queryer) ([]TableInfo, error) {
 	rows, err := db.Query(`
 		SELECT name, type, sql
 		FROM sqlite_master
-		WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'
+		WHERE type IN ('table', 'view')
+		  AND name NOT LIKE 'sqlite_%'
+		  AND name NOT LIKE '!_!_squad!_%' ESCAPE '!'
 		ORDER BY name
 	`)
 	if err != nil {
@@ -282,7 +297,9 @@ func GetTableSchema(db Queryer, tableName string) (*TableSchema, error) {
 			SELECT type, name FROM sqlite_master
 			UNION ALL
 			SELECT type, name FROM temp.sqlite_master
-		) WHERE type IN ('table', 'view') AND name = ?`,
+		) WHERE type IN ('table', 'view')
+		    AND name NOT LIKE '!_!_squad!_%' ESCAPE '!'
+		    AND name = ?`,
 		tableName,
 	).Scan(&objType)
 	if err != nil {
@@ -448,7 +465,15 @@ func GetTableSchema(db Queryer, tableName string) (*TableSchema, error) {
 	}
 
 	// 4. Triggers
-	trigRows, err := db.Query("SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ? ORDER BY name", tableName)
+	// All triggers on the table are listed, including the __squad_hook_<id>
+	// triggers M10c installs to back a Lua hook — shown for transparency
+	// (a user querying sqlite_master directly would see them too) but tagged
+	// HookManaged so the UI can distinguish squad-managed triggers, which are
+	// edited/dropped from the Hooks tab, from ones the user wrote by hand.
+	trigRows, err := db.Query(
+		`SELECT name, sql FROM sqlite_master
+		 WHERE type = 'trigger' AND tbl_name = ?
+		 ORDER BY name`, tableName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query triggers: %w", err)
 	}
@@ -461,8 +486,9 @@ func GetTableSchema(db Queryer, tableName string) (*TableSchema, error) {
 			return nil, fmt.Errorf("failed to scan trigger: %w", err)
 		}
 		triggers = append(triggers, TriggerInfo{
-			Name: name,
-			SQL:  sqlStr,
+			Name:        name,
+			SQL:         sqlStr,
+			HookManaged: isHookManagedTriggerName(name),
 		})
 	}
 

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/0funct0ry/squad/internal/db"
+	"github.com/0funct0ry/squad/internal/hooks"
 	"github.com/0funct0ry/squad/internal/restserver"
 	"github.com/0funct0ry/squad/internal/vtab"
 	"github.com/0funct0ry/squad/web"
@@ -42,6 +43,23 @@ type Server struct {
 	modulesEnabled bool
 	modulesRoot    string
 	mountStore     *vtab.MountStore
+
+	// Lua trigger hooks (M10c). The /api/hooks* routes are always mounted
+	// (there is no --hooks opt-in flag; only mutation is gated on --write),
+	// but handlers report these two resolved process flags in the Hooks
+	// tab's status strip and pass them into every hook run.
+	hookMode string
+	allowNet bool
+}
+
+// ConfigureHooks records the resolved --hook-mode/--allow-net flags for the
+// Hooks tab's status strip and hook execution.
+func (s *Server) ConfigureHooks(mode string, allowNet bool) {
+	if mode != "async" {
+		mode = "sync"
+	}
+	s.hookMode = mode
+	s.allowNet = allowNet
 }
 
 // EnableModules turns on the --modules routes for this server, recording the
@@ -164,6 +182,8 @@ func NewServer(database *sql.DB, dbPath string, write bool, examplesEnabled bool
 		write:    write,
 		examples: examplesEnabled,
 		logger:   logger,
+		hookMode: hooks.Mode(),
+		allowNet: hooks.Current().AllowNet,
 	}
 
 	s.restConfigs = restserver.NewConfigStore()
@@ -193,6 +213,8 @@ func NewSandboxServer(registry *db.Registry, examplesEnabled bool, restEnabled b
 		registry: registry,
 		examples: examplesEnabled,
 		logger:   logger,
+		hookMode: hooks.Mode(),
+		allowNet: hooks.Current().AllowNet,
 	}
 
 	s.restConfigs = restserver.NewConfigStore()
@@ -296,6 +318,7 @@ func (s *Server) setupSingleDBRoutes(api *gin.RouterGroup) {
 	s.registerExamplesRoutes(api)
 	s.registerModulesRoutes(api)
 	s.registerFunctionsRoutes(api)
+	s.registerHooksRoutes(api)
 }
 
 func (s *Server) handleMeta(c *gin.Context) {

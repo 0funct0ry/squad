@@ -29,6 +29,7 @@ require (
 	github.com/spf13/pflag v1.0.9
 	github.com/xuri/excelize/v2 v2.11.0
 	github.com/yl2chen/cidranger v1.0.2
+	github.com/yuin/gopher-lua v1.1.2
 	go.mongodb.org/mongo-driver/v2 v2.8.0
 	golang.org/x/crypto v0.54.0
 	golang.org/x/net v0.57.0

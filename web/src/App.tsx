@@ -20,6 +20,7 @@ import {
   Columns3,
   Puzzle,
   Wand2,
+  Webhook,
 } from 'lucide-react';
 import {
   sniffHex,
@@ -36,6 +37,7 @@ import ExamplesPicker, { type ExampleMeta } from './components/ExamplesPicker';
 import ConfirmModal from './components/ConfirmModal';
 import RestTab from './components/RestTab';
 import ModulesTab from './components/ModulesTab';
+import HooksTab from './components/HooksTab';
 import FunctionBrowserModal from './components/FunctionBrowserModal';
 import SqlEditorPanel from './components/SqlEditorPanel';
 import RowGrid from './components/RowGrid';
@@ -110,6 +112,7 @@ interface ForeignKeyInfo {
 interface TriggerInfo {
   name: string;
   sql: string;
+  hookManaged?: boolean;
 }
 
 interface ForeignKeyDraft {
@@ -2258,6 +2261,9 @@ export default function App() {
               // reader isn't confronted with capabilities they can't use.
               ...(restEnabled ? [{ id: 'rest', label: 'REST' }] : []),
               ...(modulesEnabled ? [{ id: 'modules', label: 'Modules' }] : []),
+              // Hooks is always present: unlike --rest/--modules it has no
+              // enable flag, only a --write gate on mutation.
+              { id: 'hooks', label: 'Hooks' },
               { id: 'info', label: 'Info' },
             ].map((tab) => (
               <button
@@ -2793,11 +2799,32 @@ export default function App() {
                       {schema.triggers.map((t) => (
                         <div key={t.name} className="font-mono text-sm space-y-1">
                           <div className="flex items-center justify-between gap-2">
-                            <div className="font-semibold text-indigo-500">{t.name}</div>
+                            <div className="flex items-center gap-2 min-w-0">
+                              <div className="font-semibold text-indigo-500 truncate">{t.name}</div>
+                              {t.hookManaged ? (
+                                <span
+                                  title="Created automatically by a Lua hook on this table — manage it from the Hooks tab, not here."
+                                  className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-indigo-50 dark:bg-indigo-400/10 text-indigo-600 dark:text-indigo-400 shrink-0 font-sans"
+                                >
+                                  <Webhook className="w-3 h-3" /> Hook
+                                </span>
+                              ) : (
+                                <span
+                                  title="A plain SQL trigger created directly (not by a Lua hook)."
+                                  className="inline-flex items-center text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 shrink-0 font-sans"
+                                >
+                                  User
+                                </span>
+                              )}
+                            </div>
                             <button
                               onClick={() => setDropTriggerConfirmation(t)}
-                              disabled={!isWrite}
-                              title={isWrite ? 'Drop trigger' : 'Write mode required'}
+                              disabled={!isWrite || t.hookManaged}
+                              title={
+                                t.hookManaged
+                                  ? 'Managed by a Lua hook — disable or delete it from the Hooks tab instead'
+                                  : isWrite ? 'Drop trigger' : 'Write mode required'
+                              }
                               className="text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 p-1.5 rounded transition-colors inline-flex items-center justify-center shrink-0 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
                             >
                               <Trash2 className="w-4 h-4" />
@@ -3569,6 +3596,16 @@ export default function App() {
               <ModulesTab
                 onToast={(message, type) => showToast(message, type)}
                 onMountsChanged={fetchMounts}
+              />
+            )}
+
+            {/* HOOKS PANEL */}
+            {activeTab === 'hooks' && (
+              <HooksTab
+                onToast={(message, type) => showToast(message, type)}
+                tableFilter={selectedTable?.name}
+                theme={resolvedDark ? 'dark' : 'light'}
+                onHookChanged={refetchSchema}
               />
             )}
 

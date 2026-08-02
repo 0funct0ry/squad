@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/0funct0ry/squad/internal/db"
+	"github.com/0funct0ry/squad/internal/hooks"
 	"github.com/0funct0ry/squad/internal/server"
 	"github.com/0funct0ry/squad/internal/vtab"
 	"github.com/spf13/cobra"
@@ -22,6 +23,7 @@ type SandboxConfig struct {
 	commonFlags
 	restFlags
 	moduleFlags
+	hookFlags
 	Dir         string
 	MaxUploadMB int64
 	Examples    bool
@@ -47,6 +49,7 @@ func init() {
 	sandboxCmd.Flags().Int64Var(&sandboxCfg.MaxUploadMB, "max-upload-size", 512, "Max upload size in MB for sandbox database files")
 	sandboxCmd.Flags().BoolVarP(&sandboxCfg.Examples, "examples", "e", false, "Enable the canned example data-model library")
 	registerModuleFlags(sandboxCmd.Flags(), &sandboxCfg.moduleFlags)
+	registerHookFlags(sandboxCmd.Flags(), &sandboxCfg.hookFlags)
 	rootCmd.AddCommand(sandboxCmd)
 }
 
@@ -97,6 +100,10 @@ func runSandbox(cmd *cobra.Command, args []string) {
 		modulesRoot = absDir
 	}
 	vtab.Configure(sandboxCfg.Modules, modulesRoot)
+	// Sandbox databases are always read-write; hooks honor the same flags,
+	// though the sandbox flow mounts no /api/hooks routes (there is no single
+	// fixed connection to attach them to).
+	hooks.Configure(sandboxCfg.HookMode, sandboxCfg.AllowNet, true)
 
 	registry := db.NewRegistry(absDir, sandboxCfg.MaxUploadMB*1024*1024)
 	if dirExplicitlySet {

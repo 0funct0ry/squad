@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/0funct0ry/squad/internal/db"
+	"github.com/0funct0ry/squad/internal/hooks"
 	"github.com/0funct0ry/squad/internal/server"
 	"github.com/0funct0ry/squad/internal/vtab"
 	"github.com/spf13/cobra"
@@ -25,6 +26,7 @@ type Config struct {
 	commonFlags
 	restFlags
 	moduleFlags
+	hookFlags
 	Write          bool
 	ReadOnlyPragma bool
 	Examples       bool
@@ -72,6 +74,7 @@ var rootCmd = &cobra.Command{
 			}
 		}
 		vtab.Configure(cfg.Modules, modulesRoot)
+		hooks.Configure(cfg.HookMode, cfg.AllowNet, cfg.Write)
 
 		// Open the database
 		database, err := db.OpenDB(resolvedPath, readOnly)
@@ -80,6 +83,19 @@ var rootCmd = &cobra.Command{
 			os.Exit(1)
 		}
 		defer database.Close()
+
+		// Attach Lua trigger hooks (M10c): creates __squad_hooks/
+		// __squad_hook_runs when writable, loads the definition cache, and
+		// (re)installs every enabled hook's trigger.
+		// Flush any hook writes deferred by the trigger-callback write lock
+		// before the connection closes (defers run LIFO, so this precedes
+		// database.Close()).
+		defer hooks.Drain()
+
+		if err := hooks.Init(database); err != nil {
+			fmt.Printf("Error: failed to initialize hooks: %v\n", err)
+			os.Exit(1)
+		}
 
 		warnIfBroadcastBind("--addr", cfg.Addr)
 		if cfg.Rest {
@@ -141,6 +157,7 @@ func init() {
 	registerCommonFlags(rootCmd.Flags(), &cfg.commonFlags)
 	registerRestFlags(rootCmd.Flags(), &cfg.restFlags)
 	registerModuleFlags(rootCmd.Flags(), &cfg.moduleFlags)
+	registerHookFlags(rootCmd.Flags(), &cfg.hookFlags)
 	rootCmd.Flags().BoolVarP(&cfg.Write, "write", "w", false, "Enable mutations (DDL, DML, write operations)")
 	rootCmd.Flags().BoolVarP(&cfg.ReadOnlyPragma, "read-only-pragma", "R", true, "Open SQLite with mode=ro when not --write")
 	rootCmd.Flags().BoolVarP(&cfg.Examples, "examples", "e", false, "Enable the canned example data-model library")

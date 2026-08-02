@@ -91,6 +91,8 @@ func (c *completer) completeDot(text string) ([][]rune, int) {
 		return toCandidates(word, c.state.mountAliasNames())
 	case ".modules":
 		return toCandidates(word, moduleNames())
+	case ".hooks":
+		return toCandidates(word, hookActionNames())
 	case ".mount":
 		return c.completeMount(fields, word, endsWithSpace)
 	default:

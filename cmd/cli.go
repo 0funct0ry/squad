@@ -8,6 +8,7 @@ import (
 
 	"github.com/0funct0ry/squad/internal/cli"
 	"github.com/0funct0ry/squad/internal/db"
+	"github.com/0funct0ry/squad/internal/hooks"
 	"github.com/0funct0ry/squad/internal/vtab"
 	"github.com/spf13/cobra"
 )
@@ -18,6 +19,7 @@ type cliConfig struct {
 	LogLevel       string
 	restFlags
 	moduleFlags
+	hookFlags
 }
 
 var cliCfg cliConfig
@@ -58,6 +60,7 @@ var cliCmd = &cobra.Command{
 			}
 		}
 		vtab.Configure(cliCfg.Modules, modulesRoot)
+		hooks.Configure(cliCfg.HookMode, cliCfg.AllowNet, cliCfg.Write)
 
 		database, err := db.OpenDB(resolvedPath, readOnly)
 		if err != nil {
@@ -65,6 +68,16 @@ var cliCmd = &cobra.Command{
 			os.Exit(1)
 		}
 		defer database.Close()
+
+		// Flush any hook writes deferred by the trigger-callback write lock
+		// before the connection closes (defers run LIFO, so this precedes
+		// database.Close()).
+		defer hooks.Drain()
+
+		if err := hooks.Init(database); err != nil {
+			fmt.Printf("Error: failed to initialize hooks: %v\n", err)
+			os.Exit(1)
+		}
 
 		interactive := inlineSQL == "" && cli.IsStdinTerminal()
 		state := cli.NewState(database, resolvedPath, cliCfg.Write, interactive, readOnly, cliCfg.RestPort, cliCfg.RestBindAddr, cliCfg.Modules, modulesRoot)
@@ -83,4 +96,5 @@ func init() {
 	cliCmd.Flags().StringVarP(&cliCfg.LogLevel, "log-level", "l", "info", "Log level (debug/info/warn/error)")
 	registerRestFlags(cliCmd.Flags(), &cliCfg.restFlags)
 	registerModuleFlags(cliCmd.Flags(), &cliCfg.moduleFlags)
+	registerHookFlags(cliCmd.Flags(), &cliCfg.hookFlags)
 }

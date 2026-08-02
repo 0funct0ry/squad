@@ -21,7 +21,7 @@ var dotCommandNames = []string{
 	".stats", ".explain", ".plan", ".bookmark", ".bookmarks", ".shell", ".sh",
 	".watch", ".open", ".backup", ".clone", ".seed", ".diff", ".constraints",
 	".size", ".stat", ".repeat", ".modules", ".mounts", ".mount", ".unmount",
-	".functions",
+	".functions", ".hooks",
 }
 
 const helpText = `.help                     show this message
@@ -76,6 +76,13 @@ const helpText = `.help                     show this message
 .functions CATEGORY       list a category's functions with signature + description
 .functions NAME           show one function's signature/description/example
 .functions NAME --try ARG...  call NAME(ARG...) and print the result
+.hooks list ?--table T?   list Lua trigger hooks
+.hooks create --table T --event insert --timing after --scope row --name N --file F.lua   create a hook (--write)
+.hooks edit ID --file F.lua   replace a hook's Lua source (--write)
+.hooks test ID 'JSON'     dry-run a hook against sample {"old":{...},"new":{...}} data
+.hooks enable|disable ID  toggle a hook (--write)
+.hooks rm ID              delete a hook and drop its trigger (--write)
+.hooks log ID             show a hook's execution log
 `
 
 // dispatchDotCommand parses and executes a dot-command line. ".echo" and
@@ -127,6 +134,10 @@ func (s *State) dispatchDotCommand(line string) {
 	}
 	if trimmed == ".functions" || strings.HasPrefix(trimmed, ".functions ") {
 		s.cmdFunctions(strings.TrimSpace(strings.TrimPrefix(trimmed, ".functions")))
+		return
+	}
+	if trimmed == ".hooks" || strings.HasPrefix(trimmed, ".hooks ") {
+		s.cmdHooks(strings.TrimSpace(strings.TrimPrefix(trimmed, ".hooks")))
 		return
 	}
 
