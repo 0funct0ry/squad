@@ -17,6 +17,8 @@ import { basicSetup } from 'codemirror';
 import { sql as sqlLanguage } from '@codemirror/lang-sql';
 import { EditorState, Compartment } from '@codemirror/state';
 import { EditorView, keymap } from '@codemirror/view';
+import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
+import { tags as t } from '@lezer/highlight';
 import { udfCompletionSource } from '../lib/udfCompletion';
 import { type ExampleMeta } from './ExamplesPicker';
 import ExportFieldNamesModal, { isCleanIdentifier } from './ExportFieldNamesModal';
@@ -42,6 +44,53 @@ export interface QueryHistoryEntry {
 }
 
 const themeCompartment = new Compartment();
+const highlightCompartment = new Compartment();
+
+// Explicit syntax highlight styles for both themes — CodeMirror's basicSetup
+// only registers defaultHighlightStyle as a low-priority fallback, which is
+// tuned for a light background; against our dark editor background (#0f172a)
+// several of its token colors (dark blues/reds) fail contrast, so both
+// themes get their own foreground-tuned palette instead of relying on the
+// fallback for dark mode.
+const lightHighlightStyle = HighlightStyle.define([
+  { tag: t.keyword, color: '#7c3aed', fontWeight: '600' },
+  { tag: [t.name, t.deleted, t.character, t.propertyName, t.macroName], color: '#0f172a' },
+  { tag: [t.function(t.variableName), t.labelName], color: '#4338ca' },
+  { tag: [t.color, t.constant(t.name), t.standard(t.name)], color: '#b45309' },
+  { tag: [t.definition(t.name), t.separator], color: '#0f172a' },
+  { tag: [t.typeName, t.className, t.number, t.changed, t.annotation, t.modifier, t.self, t.namespace], color: '#0f766e' },
+  { tag: [t.operator, t.operatorKeyword], color: '#be185d' },
+  { tag: [t.url, t.escape, t.regexp, t.link], color: '#0e7490' },
+  { tag: [t.meta, t.comment], color: '#64748b', fontStyle: 'italic' },
+  { tag: t.strong, fontWeight: 'bold' },
+  { tag: t.emphasis, fontStyle: 'italic' },
+  { tag: t.strikethrough, textDecoration: 'line-through' },
+  { tag: t.link, textDecoration: 'underline' },
+  { tag: t.heading, fontWeight: 'bold', color: '#0f172a' },
+  { tag: [t.atom, t.bool, t.special(t.variableName)], color: '#b45309' },
+  { tag: [t.processingInstruction, t.string, t.inserted], color: '#b45309' },
+  { tag: t.invalid, color: '#dc2626' },
+]);
+
+const darkHighlightStyle = HighlightStyle.define([
+  { tag: t.keyword, color: '#c4b5fd', fontWeight: '600' },
+  { tag: [t.name, t.deleted, t.character, t.propertyName, t.macroName], color: '#e2e8f0' },
+  { tag: [t.function(t.variableName), t.labelName], color: '#93c5fd' },
+  { tag: [t.color, t.constant(t.name), t.standard(t.name)], color: '#fbbf24' },
+  { tag: [t.definition(t.name), t.separator], color: '#e2e8f0' },
+  { tag: [t.typeName, t.className, t.number, t.changed, t.annotation, t.modifier, t.self, t.namespace], color: '#5eead4' },
+  { tag: [t.operator, t.operatorKeyword], color: '#f472b6' },
+  { tag: [t.url, t.escape, t.regexp, t.link], color: '#67e8f9' },
+  { tag: [t.meta, t.comment], color: '#94a3b8', fontStyle: 'italic' },
+  { tag: t.strong, fontWeight: 'bold' },
+  { tag: t.emphasis, fontStyle: 'italic' },
+  { tag: t.strikethrough, textDecoration: 'line-through' },
+  { tag: t.link, textDecoration: 'underline' },
+  { tag: t.heading, fontWeight: 'bold', color: '#f1f5f9' },
+  { tag: [t.atom, t.bool, t.special(t.variableName)], color: '#fbbf24' },
+  { tag: [t.processingInstruction, t.string, t.inserted], color: '#fbbf24' },
+  { tag: t.invalid, color: '#f87171' },
+]);
 
 const lightTheme = EditorView.theme({
   "&": {
@@ -113,6 +162,7 @@ export function SqlEditor({ value, onChange, onRun, theme, editorViewRef }: SqlE
         sql,
         sql.language.data.of({ autocomplete: udfCompletionSource }),
         themeCompartment.of(theme === 'dark' ? darkTheme : lightTheme),
+        highlightCompartment.of(syntaxHighlighting(theme === 'dark' ? darkHighlightStyle : lightHighlightStyle)),
         keymap.of([
           {
             key: "Mod-Enter",
@@ -155,7 +205,10 @@ export function SqlEditor({ value, onChange, onRun, theme, editorViewRef }: SqlE
     const view = editorViewRef.current;
     if (view) {
       view.dispatch({
-        effects: themeCompartment.reconfigure(theme === 'dark' ? darkTheme : lightTheme)
+        effects: [
+          themeCompartment.reconfigure(theme === 'dark' ? darkTheme : lightTheme),
+          highlightCompartment.reconfigure(syntaxHighlighting(theme === 'dark' ? darkHighlightStyle : lightHighlightStyle)),
+        ]
       });
     }
   }, [theme]);
@@ -399,7 +452,7 @@ export default function SqlEditorPanel({
             className={`border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden bg-white dark:bg-slate-900 flex flex-col ${maximized ? 'flex-1' : 'shrink-0'}`}
             style={maximized ? undefined : { height: editorHeight }}
           >
-            <div className="flex items-center justify-between px-3 py-2 bg-slate-100 dark:bg-slate-850 text-sm border-b border-slate-200 dark:border-slate-800 shrink-0">
+            <div className="flex items-center justify-between px-3 py-2 bg-slate-100 dark:bg-slate-800/60 text-sm border-b border-slate-200 dark:border-slate-800 shrink-0">
               <span className="font-medium text-slate-700 dark:text-slate-300">query.sql</span>
               <div className="flex items-center gap-2">
                 {examplesList && (
@@ -623,6 +676,9 @@ export default function SqlEditorPanel({
                         rows={queryResult.rows}
                         isWrite={isWrite}
                         resetKey={lastExecutedSql}
+                        tableName={queryResult.sourceTable}
+                        primaryKeyColumns={queryResult.primaryKeyColumns}
+                        onToast={showToast}
                         getRowKey={(row) => {
                           const key: Record<string, any> = {};
                           (queryResult.primaryKeyColumns || []).forEach((pkCol) => {

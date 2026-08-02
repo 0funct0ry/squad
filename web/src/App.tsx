@@ -18,7 +18,8 @@ import {
   AudioLines,
   Upload,
   Columns3,
-  Puzzle
+  Puzzle,
+  Wand2,
 } from 'lucide-react';
 import {
   sniffHex,
@@ -42,6 +43,10 @@ import ImportModal from './components/ImportModal';
 import XmlExportModal, { defaultXmlExportOptions, type XmlExportOptions } from './components/XmlExportModal';
 import { isCleanIdentifier } from './components/ExportFieldNamesModal';
 import { apiFetch, apiUrl, setApiBase } from './lib/api';
+import FilterModal from './components/FilterModal';
+import TransformModal from './components/TransformModal';
+import { type ColumnFilter, describeFilter } from './lib/columnFilter';
+import { toUpdateSQL } from './lib/rowSerialize';
 
 interface MetaData {
   name: string;
@@ -461,8 +466,10 @@ export default function App() {
   const [pageSize, setPageSize] = useState<number>(100);
   const [orderBy, setOrderBy] = useState<string>('');
   const [dir, setDir] = useState<'asc' | 'desc' | ''>('');
-  const [filters, setFilters] = useState<Record<string, string>>({});
-  const [filterInputVisible, setFilterInputVisible] = useState<Record<string, boolean>>({});
+  const [columnFilters, setColumnFilters] = useState<ColumnFilter[]>([]);
+  const [filterModalColumn, setFilterModalColumn] = useState<string | null>(null);
+  const [transformTarget, setTransformTarget] = useState<{ column: string; rows: any[][] } | null>(null);
+  const [fkNavPreview, setFkNavPreview] = useState<Record<string, string>>({});
 
   // Info Tab State
   const [infoLoading, setInfoLoading] = useState<boolean>(false);
@@ -471,6 +478,7 @@ export default function App() {
   const [infoSortDir, setInfoSortDir] = useState<'asc' | 'desc'>('asc');
   const [toast, setToast] = useState<{ message: string; type: 'error' | 'success' } | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingNavFilterRef = useRef<ColumnFilter | null>(null);
 
   const showToast = (message: string, type: 'error' | 'success', duration?: number) => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -567,13 +575,13 @@ export default function App() {
   const buildExportUrl = (format: string, xmlOpts?: XmlExportOptions): string => {
     if (!selectedTable) return '';
     let url = `/tables/${encodeURIComponent(selectedTable.name)}/export?format=${format}`;
-    if (applyFilterSort && (orderBy || Object.values(filters).some(v => v !== ''))) {
+    if (applyFilterSort && (orderBy || columnFilters.length > 0)) {
       url += `&filtered=true`;
       if (orderBy) url += `&orderBy=${encodeURIComponent(orderBy)}`;
       if (dir) url += `&dir=${encodeURIComponent(dir)}`;
-      Object.entries(filters).forEach(([col, val]) => {
-        if (val !== '') url += `&filter[${encodeURIComponent(col)}]=${encodeURIComponent(val)}`;
-      });
+      if (columnFilters.length > 0) {
+        url += `&filters=${encodeURIComponent(JSON.stringify(columnFilters))}`;
+      }
     }
     if (format === 'sql' && includeSchema) {
       url += `&includeSchema=true`;
@@ -1589,8 +1597,12 @@ export default function App() {
     setPage(1);
     setOrderBy('');
     setDir('');
-    setFilters({});
-    setFilterInputVisible({});
+    if (pendingNavFilterRef.current) {
+      setColumnFilters([pendingNavFilterRef.current]);
+      pendingNavFilterRef.current = null;
+    } else {
+      setColumnFilters([]);
+    }
     setEditorMode('alter');
     setNewTableNameInput(selectedTable.name);
     setInlineAddRow(null);
@@ -1659,11 +1671,9 @@ export default function App() {
     if (orderBy) {
       url += `&orderBy=${orderBy}&dir=${dir}`;
     }
-    Object.entries(filters).forEach(([col, val]) => {
-      if (val) {
-        url += `&filter[${col}]=${encodeURIComponent(val)}`;
-      }
-    });
+    if (columnFilters.length > 0) {
+      url += `&filters=${encodeURIComponent(JSON.stringify(columnFilters))}`;
+    }
 
     setRowsLoading(true);
     apiFetch(url)
@@ -1672,12 +1682,54 @@ export default function App() {
         if (body.ok && body.data) {
           setRowsData(body.data);
         } else {
-          console.error(body.error?.message);
+          showToast(body.error?.message || 'Failed to load rows', 'error');
         }
       })
-      .catch(console.error)
+      .catch((err) => showToast(err.message || 'Failed to load rows', 'error'))
       .finally(() => setRowsLoading(false));
-  }, [selectedTable, page, pageSize, orderBy, dir, filters, refetchTrigger]);
+  }, [selectedTable, page, pageSize, orderBy, dir, columnFilters, refetchTrigger]);
+
+  // Prefetch a representative label for each distinct FK value on the current
+  // page, so FK cells can show an inline preview (e.g. "42 (Jane Doe)").
+  useEffect(() => {
+    if (!schema || !rowsData || schema.foreignKeys.length === 0) return;
+
+    schema.foreignKeys.forEach((fk) => {
+      const colIdx = rowsData.columns.indexOf(fk.from);
+      if (colIdx === -1) return;
+      const refSchema = allSchemas[fk.table];
+      const labelCol = refSchema?.columns.find(
+        (c) => c.type.toLowerCase().includes('char') || c.type.toLowerCase().includes('text')
+      )?.name;
+
+      const distinctValues = new Set<any>();
+      rowsData.rows.forEach((row) => {
+        const v = row[colIdx];
+        if (v !== null && v !== undefined) distinctValues.add(v);
+      });
+
+      distinctValues.forEach((val) => {
+        const key = `${fk.table}.${fk.to}=${val}`;
+        if (fkNavPreview[key] !== undefined) return;
+        if (!labelCol) return;
+        apiFetch(
+          `/tables/${fk.table}/rows?limit=1&filters=${encodeURIComponent(
+            JSON.stringify([{ column: fk.to, operator: 'eq', value: val }])
+          )}`
+        )
+          .then((res) => res.json())
+          .then((body) => {
+            if (!body.ok || !body.data?.rows?.[0]) return;
+            const labelIdx = body.data.columns.indexOf(labelCol);
+            const label = labelIdx !== -1 ? body.data.rows[0][labelIdx] : null;
+            if (label !== null && label !== undefined) {
+              setFkNavPreview((prev) => ({ ...prev, [key]: String(label) }));
+            }
+          })
+          .catch(() => {});
+      });
+    });
+  }, [schema, rowsData, allSchemas]);
 
   const toggleTheme = () => {
     setTheme((prev) => (prev === 'dark' ? 'light' : prev === 'light' ? 'system' : 'dark'));
@@ -1742,9 +1794,61 @@ export default function App() {
     setPage(1);
   };
 
-  const handleFilterChange = (colName: string, value: string) => {
-    setFilters(prev => ({ ...prev, [colName]: value }));
+  const applyColumnFilter = (filter: ColumnFilter) => {
+    setColumnFilters((prev) => [...prev.filter((f) => f.column !== filter.column), filter]);
+    setFilterModalColumn(null);
     setPage(1);
+  };
+
+  const removeColumnFilter = (column: string) => {
+    setColumnFilters((prev) => prev.filter((f) => f.column !== column));
+    setPage(1);
+  };
+
+  const clearColumnFilters = () => {
+    setColumnFilters([]);
+    setPage(1);
+  };
+
+  const applyTransformDirect = async (newValues: any[]) => {
+    if (!transformTarget || !selectedTable || !isWrite) return;
+    try {
+      // Sequential, not Promise.all: concurrent writes against the single
+      // SQLite connection race for the same lock and surface as SQLITE_BUSY
+      // ("database is locked") failures under any real row count.
+      for (let i = 0; i < transformTarget.rows.length; i++) {
+        const key = getRowKey(transformTarget.rows[i]);
+        await updateRow(selectedTable.name, key, { [transformTarget.column]: newValues[i] });
+      }
+      showToast(`Transformed ${newValues.length} row${newValues.length === 1 ? '' : 's'}`, 'success');
+      setTransformTarget(null);
+      setRefetchTrigger((prev) => prev + 1);
+    } catch (err: any) {
+      showToast(err.message || 'Transform failed', 'error');
+    }
+  };
+
+  const copyTransformAsUpdateSQL = (newValues: any[]) => {
+    if (!transformTarget || !selectedTable || !rowsData) return;
+    const rows = transformTarget.rows.map((row) => [...row]);
+    const colIdx = rowsData.columns.indexOf(transformTarget.column);
+    rows.forEach((row, i) => {
+      row[colIdx] = newValues[i];
+    });
+    const sql = toUpdateSQL(selectedTable.name, rowsData.columns, rows, schema?.primaryKey || []);
+    navigator.clipboard
+      .writeText(sql)
+      .then(() => showToast('Copied UPDATE statements to clipboard', 'success'))
+      .catch(() => showToast('Failed to copy to clipboard', 'error'));
+    setTransformTarget(null);
+  };
+
+  const navigateToForeignKeyRow = (refTable: string, refColumn: string, value: any) => {
+    const target = tables.find((t) => t.name === refTable);
+    if (!target) return;
+    pendingNavFilterRef.current = { column: refColumn, operator: 'eq', value };
+    setSelectedTable(target);
+    setActiveTab('data');
   };
 
   const formatHexDump = (hexStr: string): string => {
@@ -2313,6 +2417,32 @@ export default function App() {
                   </div>
                 </div>
 
+                {columnFilters.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                    {columnFilters.map((f) => (
+                      <span
+                        key={f.column}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-mono bg-indigo-50 dark:bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800"
+                      >
+                        {describeFilter(f)}
+                        <button
+                          onClick={() => removeColumnFilter(f.column)}
+                          className="hover:text-red-500 cursor-pointer"
+                          title="Remove filter"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </span>
+                    ))}
+                    <button
+                      onClick={clearColumnFilters}
+                      className="text-[11px] text-slate-400 hover:text-red-500 hover:underline cursor-pointer px-1"
+                    >
+                      Clear filters
+                    </button>
+                  </div>
+                )}
+
                 {rowsLoading ? (
                   <div className="border border-slate-200 dark:border-slate-800 rounded-lg bg-white dark:bg-slate-900 flex-1 min-h-0 p-3 space-y-2 animate-pulse">
                     <div className="h-6 bg-slate-100 dark:bg-slate-800 rounded" />
@@ -2335,12 +2465,21 @@ export default function App() {
                   getRowKey={getRowKey}
                   resetKey={selectedTable?.name}
                   hiddenColumns={hiddenDataColumns}
+                  primaryKeyColumns={schema?.primaryKey}
+                  tableName={selectedTable?.name || ''}
+                  onToast={showToast}
+                  onExportSelected={() => {
+                    setActiveTab('export');
+                    showToast('Switched to the Export tab — enable "Apply current filter/sort" there to scope the export to your active filters.', 'success');
+                  }}
                   isColumnReadOnly={(colName) => colName === 'rowid' || schema?.columns.find(c => c.name === colName)?.generated !== null}
                   isColumnNumeric={(colName) => {
                     const colType = schema?.columns.find(c => c.name === colName)?.type || '';
                     return ['integer', 'real', 'numeric'].includes(colType.toLowerCase());
                   }}
-                  renderHeaderCell={(col) => (
+                  renderHeaderCell={(col) => {
+                    const activeFilter = columnFilters.find((f) => f.column === col);
+                    return (
                     <div className="flex flex-col gap-1">
                       <div
                         className="flex items-center gap-1 cursor-pointer select-none hover:text-indigo-500"
@@ -2351,26 +2490,30 @@ export default function App() {
                           {orderBy === col ? (dir === 'asc' ? '▲' : '▼') : '↕'}
                         </span>
                       </div>
-                      <div className="mt-1 font-normal">
-                        {filterInputVisible[col] ? (
-                          <input
-                            type="text"
-                            placeholder="Filter..."
-                            value={filters[col] || ''}
-                            onChange={(e) => handleFilterChange(col, e.target.value)}
-                            className="text-xs font-normal px-1 py-0.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none w-24"
-                          />
-                        ) : (
+                      <div className="mt-1 font-normal flex items-center gap-1">
+                        <button
+                          onClick={() => setFilterModalColumn(col)}
+                          className={`text-[10px] font-normal px-1 rounded border flex items-center gap-1 ${
+                            activeFilter
+                              ? 'text-indigo-600 dark:text-indigo-400 border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-500/10'
+                              : 'text-slate-400 hover:text-indigo-500 border-transparent hover:border-slate-200 dark:hover:border-slate-800'
+                          }`}
+                        >
+                          <Search className="w-2.5 h-2.5" /> {activeFilter ? 'Filtered' : 'Filter'}
+                        </button>
+                        {isWrite && (
                           <button
-                            onClick={() => setFilterInputVisible(prev => ({ ...prev, [col]: true }))}
-                            className="text-[10px] text-slate-400 hover:text-indigo-500 font-normal px-1 rounded border border-transparent hover:border-slate-200 dark:hover:border-slate-800 flex items-center gap-1"
+                            onClick={() => setTransformTarget({ column: col, rows: rowsData?.rows || [] })}
+                            title="Transform this column's currently-loaded rows"
+                            className="text-[10px] font-normal px-1 rounded border border-transparent text-slate-400 hover:text-indigo-500 hover:border-slate-200 dark:hover:border-slate-800 flex items-center gap-1"
                           >
-                            <Search className="w-2.5 h-2.5" /> Filter
+                            <Wand2 className="w-2.5 h-2.5" />
                           </button>
                         )}
                       </div>
                     </div>
-                  )}
+                  );
+                  }}
                   renderCell={(val, colName) => {
                     const colType = schema?.columns.find(c => c.name === colName)?.type || '';
                     const isBlob = colType.toLowerCase() === 'blob';
@@ -2407,6 +2550,21 @@ export default function App() {
                           className="text-amber-600 dark:text-amber-400 underline decoration-dotted hover:text-amber-500 dark:hover:text-amber-300"
                         >
                           BLOB ({bytesCount} bytes)
+                        </button>
+                      );
+                    }
+                    const fk = schema?.foreignKeys.find((f) => f.from === colName);
+                    if (fk && val !== null && val !== undefined) {
+                      const previewKey = `${fk.table}.${fk.to}=${val}`;
+                      const preview = fkNavPreview[previewKey];
+                      return (
+                        <button
+                          onClick={() => navigateToForeignKeyRow(fk.table, fk.to, val)}
+                          title={`Go to ${fk.table} where ${fk.to} = ${val}${preview ? ` (${preview})` : ''}`}
+                          className="underline decoration-dotted decoration-indigo-400 text-indigo-600 dark:text-indigo-400 hover:text-indigo-500 cursor-pointer inline-flex items-center gap-1"
+                        >
+                          {String(val)}
+                          {preview && <span className="text-slate-400 dark:text-slate-500 font-normal">({preview})</span>}
                         </button>
                       );
                     }
@@ -2459,6 +2617,7 @@ export default function App() {
                   onSaveEdit={async (key, values) => { await handleSaveEditRowFromGrid(key, values); }}
                   onDeleteRow={async (key) => { await executeDeleteRowFromGrid(key); }}
                   onBulkDelete={async (keys) => { await handleBulkDeleteRows(keys); }}
+                  onTransformSelected={(rows) => setTransformTarget({ column: rowsData?.columns[0] || '', rows })}
                 />
                 )}
 
@@ -3358,7 +3517,7 @@ export default function App() {
                 {/* Toggles */}
                 <div className="flex flex-col sm:flex-row sm:items-center gap-4 text-sm mt-4 text-slate-500 dark:text-slate-400 border-t border-slate-100 dark:border-slate-800/80 pt-4">
                   {/* Apply Filter/Sort Toggle */}
-                  {(orderBy || Object.values(filters).some(v => v !== '')) ? (
+                  {(orderBy || columnFilters.length > 0) ? (
                     <label className="flex items-center gap-2 cursor-pointer select-none">
                       <input
                         type="checkbox"
@@ -3756,6 +3915,29 @@ export default function App() {
             executeDropTrigger(dropTriggerConfirmation);
             setDropTriggerConfirmation(null);
           }}
+        />
+      )}
+
+      {filterModalColumn && (
+        <FilterModal
+          column={filterModalColumn}
+          initial={columnFilters.find((f) => f.column === filterModalColumn)}
+          onCancel={() => setFilterModalColumn(null)}
+          onApply={applyColumnFilter}
+        />
+      )}
+
+      {transformTarget && rowsData && (
+        <TransformModal
+          column={transformTarget.column}
+          columnOptions={rowsData.columns}
+          onColumnChange={(column) => setTransformTarget((prev) => (prev ? { ...prev, column } : prev))}
+          scopeLabel={`${transformTarget.rows.length} row${transformTarget.rows.length === 1 ? '' : 's'}`}
+          currentValues={transformTarget.rows.map((row) => row[rowsData.columns.indexOf(transformTarget.column)])}
+          isWrite={isWrite}
+          onCancel={() => setTransformTarget(null)}
+          onApplyDirect={applyTransformDirect}
+          onCopyAsUpdateSQL={copyTransformAsUpdateSQL}
         />
       )}
 

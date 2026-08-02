@@ -290,13 +290,9 @@ func (s *Server) handleTableExport(c *gin.Context) {
 			// Re-use M1 rows query-param logic
 			orderBy := c.Query("orderBy")
 			dir := c.Query("dir")
-			filters := make(map[string]string)
-			queries := c.Request.URL.Query()
-			for k, v := range queries {
-				if strings.HasPrefix(k, "filter[") && strings.HasSuffix(k, "]") && len(v) > 0 {
-					col := k[7 : len(k)-1]
-					filters[col] = v[0]
-				}
+			filters, ferr := parseRowFilters(c)
+			if ferr != nil {
+				return ferr
 			}
 			params := db.RowQueryParams{
 				OrderBy: orderBy,

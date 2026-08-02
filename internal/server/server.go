@@ -284,6 +284,7 @@ func (s *Server) setupSingleDBRoutes(api *gin.RouterGroup) {
 	api.PATCH("/tables/:name/rows", s.WriteGateMiddleware("updating row"), s.handleUpdateRow)
 	api.DELETE("/tables/:name/rows", s.WriteGateMiddleware("deleting row"), s.handleDeleteRow)
 	api.POST("/tables/:name/rows/bulk-delete", s.WriteGateMiddleware("deleting rows"), s.handleBulkDeleteRows)
+	api.POST("/transform/template", s.handleTransformTemplate)
 	api.POST("/import/preview", s.handleImportPreview)
 	api.POST("/tables/:name/import", s.WriteGateMiddleware("importing rows"), s.handleImportIntoTable)
 	api.POST("/tables/import", s.WriteGateMiddleware("importing rows"), s.handleImportCreateTable)
@@ -377,14 +378,13 @@ func (s *Server) handleTableRows(c *gin.Context) {
 	orderBy := c.Query("orderBy")
 	dir := c.Query("dir")
 
-	// Parse column filters (e.g. filter[id]=12 or filter[email]=ada)
-	filters := make(map[string]string)
-	queries := c.Request.URL.Query()
-	for k, v := range queries {
-		if strings.HasPrefix(k, "filter[") && strings.HasSuffix(k, "]") && len(v) > 0 {
-			col := k[7 : len(k)-1]
-			filters[col] = v[0]
-		}
+	filters, err := parseRowFilters(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"ok":    false,
+			"error": gin.H{"code": "VALIDATION", "message": err.Error()},
+		})
+		return
 	}
 
 	params := db.RowQueryParams{
@@ -396,12 +396,19 @@ func (s *Server) handleTableRows(c *gin.Context) {
 	}
 
 	var result *db.RowResult
-	err := vtab.WithMounts(c.Request.Context(), s.db, s.mountStore, func(conn *sql.Conn) error {
+	err = vtab.WithMounts(c.Request.Context(), s.db, s.mountStore, func(conn *sql.Conn) error {
 		var err error
 		result, err = db.GetTableRows(db.WrapConn(conn), name, params)
 		return err
 	})
 	if err != nil {
+		if errors.Is(err, db.ErrFilterUnsupported) {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"ok":    false,
+				"error": gin.H{"code": "VALIDATION", "message": err.Error()},
+			})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"ok":    false,
 			"error": gin.H{"code": "DB_ERROR", "message": err.Error()},

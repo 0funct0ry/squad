@@ -3,9 +3,11 @@ package db
 import (
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -87,12 +89,141 @@ type RowResult struct {
 	Total   int64           `json:"total"`
 }
 
+// Filter is a single column filter-expression clause. Multiple Filters passed
+// to BuildFilterClause are AND-combined.
+type Filter struct {
+	Column   string        `json:"column"`
+	Operator string        `json:"operator"`
+	Value    interface{}   `json:"value,omitempty"`
+	Value2   interface{}   `json:"value2,omitempty"` // second bound for "between"
+	Values   []interface{} `json:"values,omitempty"` // for "in"/"not_in"
+}
+
+// ErrFilterUnsupported is returned when a filter's operator can't be applied
+// (e.g. "regexp" without SQLite's REGEXP extension registered) or is malformed
+// (e.g. non-numeric BETWEEN bounds, empty IN list). The caller should surface
+// this as a VALIDATION error, not send the filter through as raw SQL.
+var ErrFilterUnsupported = errors.New("filter operator not supported")
+
 type RowQueryParams struct {
 	Limit   int
 	Offset  int
 	OrderBy string
 	Dir     string // "asc" or "desc"
-	Filters map[string]string
+	Filters []Filter
+}
+
+// BuildFilterClause turns a list of AND-combined column filters into a
+// parameterized SQL WHERE fragment (without the "WHERE" keyword) plus the
+// bound-parameter slice, in the same order as placeholders appear. Returns
+// ("", nil, nil) when filters is empty. Every filter is validated against the
+// schema's column set and the operator's expected shape; malformed input
+// returns ErrFilterUnsupported wrapped with a message describing the problem,
+// never partially-applied SQL.
+func BuildFilterClause(schema *TableSchema, filters []Filter) (string, []interface{}, error) {
+	if len(filters) == 0 {
+		return "", nil, nil
+	}
+
+	columnMap := make(map[string]bool, len(schema.Columns))
+	for _, col := range schema.Columns {
+		columnMap[col.Name] = true
+	}
+
+	var clauses []string
+	var args []interface{}
+
+	for _, f := range filters {
+		if !columnMap[f.Column] {
+			return "", nil, fmt.Errorf("%w: unknown column %q", ErrFilterUnsupported, f.Column)
+		}
+		col := QuoteIdentifier(f.Column)
+
+		switch f.Operator {
+		case "eq":
+			clauses = append(clauses, fmt.Sprintf("%s = ?", col))
+			args = append(args, f.Value)
+		case "neq":
+			clauses = append(clauses, fmt.Sprintf("%s != ?", col))
+			args = append(args, f.Value)
+		case "contains":
+			clauses = append(clauses, fmt.Sprintf("%s LIKE ?", col))
+			args = append(args, "%"+fmt.Sprintf("%v", f.Value)+"%")
+		case "starts_with":
+			clauses = append(clauses, fmt.Sprintf("%s LIKE ?", col))
+			args = append(args, fmt.Sprintf("%v", f.Value)+"%")
+		case "ends_with":
+			clauses = append(clauses, fmt.Sprintf("%s LIKE ?", col))
+			args = append(args, "%"+fmt.Sprintf("%v", f.Value))
+		case "gt":
+			clauses = append(clauses, fmt.Sprintf("%s > ?", col))
+			args = append(args, f.Value)
+		case "lt":
+			clauses = append(clauses, fmt.Sprintf("%s < ?", col))
+			args = append(args, f.Value)
+		case "between":
+			lo, loOk := toFloat(f.Value)
+			hi, hiOk := toFloat(f.Value2)
+			if !loOk || !hiOk {
+				return "", nil, fmt.Errorf("%w: between requires two numeric bounds for column %q", ErrFilterUnsupported, f.Column)
+			}
+			if lo > hi {
+				lo, hi = hi, lo
+			}
+			clauses = append(clauses, fmt.Sprintf("%s BETWEEN ? AND ?", col))
+			args = append(args, lo, hi)
+		case "is_null":
+			clauses = append(clauses, fmt.Sprintf("%s IS NULL", col))
+		case "is_not_null":
+			clauses = append(clauses, fmt.Sprintf("%s IS NOT NULL", col))
+		case "in", "not_in":
+			if len(f.Values) == 0 {
+				return "", nil, fmt.Errorf("%w: %s requires a non-empty value list for column %q", ErrFilterUnsupported, f.Operator, f.Column)
+			}
+			placeholders := make([]string, len(f.Values))
+			for i, v := range f.Values {
+				placeholders[i] = "?"
+				args = append(args, v)
+			}
+			kw := "IN"
+			if f.Operator == "not_in" {
+				kw = "NOT IN"
+			}
+			clauses = append(clauses, fmt.Sprintf("%s %s (%s)", col, kw, strings.Join(placeholders, ", ")))
+		case "regexp":
+			// modernc.org/sqlite does not register a REGEXP function by
+			// default, so an unqualified REGEXP operator would raise a
+			// runtime "no such function" error from SQLite itself for every
+			// row rather than failing fast with a clear message. Reject here
+			// instead of ever emitting REGEXP into the query.
+			return "", nil, fmt.Errorf("%w: regexp filtering is not available (SQLite REGEXP extension not registered)", ErrFilterUnsupported)
+		default:
+			return "", nil, fmt.Errorf("%w: unknown operator %q", ErrFilterUnsupported, f.Operator)
+		}
+	}
+
+	return strings.Join(clauses, " AND "), args, nil
+}
+
+func toFloat(v interface{}) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil
+	case string:
+		f, err := strconv.ParseFloat(n, 64)
+		return f, err == nil
+	default:
+		return 0, false
+	}
 }
 
 // GetTables returns a list of tables and views with their row counts.
@@ -391,25 +522,14 @@ func BuildTableQuery(db Queryer, tableName string, params RowQueryParams) (strin
 	}
 
 	// Construct dynamic query
-	var whereClauses []string
-	var args []interface{}
-
-	for col, val := range params.Filters {
-		if columnMap[col] {
-			whereClauses = append(whereClauses, fmt.Sprintf("%s LIKE ?", QuoteIdentifier(col)))
-			args = append(args, "%"+val+"%")
-		}
+	whereClause, args, err := BuildFilterClause(schema, params.Filters)
+	if err != nil {
+		return "", "", nil, nil, err
 	}
 
 	wherePart := ""
-	if len(whereClauses) > 0 {
-		wherePart = " WHERE "
-		for i, clause := range whereClauses {
-			if i > 0 {
-				wherePart += " AND "
-			}
-			wherePart += clause
-		}
+	if whereClause != "" {
+		wherePart = " WHERE " + whereClause
 	}
 
 	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM %s%s", quotedTable, wherePart)

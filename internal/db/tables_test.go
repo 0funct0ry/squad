@@ -105,7 +105,7 @@ func TestTablesIntrospection(t *testing.T) {
 	filterParams := RowQueryParams{
 		Limit:   10,
 		Offset:  0,
-		Filters: map[string]string{"email": "ada"},
+		Filters: []Filter{{Column: "email", Operator: "contains", Value: "ada"}},
 	}
 	resFiltered, err := GetTableRows(db, "users", filterParams)
 	if err != nil {

@@ -1,6 +1,21 @@
 import { useEffect, useState } from 'react';
-import { Save, X, Edit2, Trash2 } from 'lucide-react';
+import { Save, X, Edit2, Trash2, MoreVertical, Copy, Download, Wand2 } from 'lucide-react';
 import ConfirmModal from './ConfirmModal';
+import CopyFormatModal, { type CopyFormatOption } from './CopyFormatModal';
+import {
+  toCSV,
+  toJSON,
+  toJSONL,
+  toXML,
+  toYAML,
+  toMarkdownTable,
+  toSQLValues,
+  toInsertSQL,
+  toUpdateSQL,
+  toDeleteSQL,
+  toWhereClause,
+  toSelectSQL,
+} from '../lib/rowSerialize';
 
 export interface RowGridProps {
   columns: string[];
@@ -32,6 +47,25 @@ export interface RowGridProps {
   onBulkDelete: (keys: Record<string, any>[]) => Promise<void>;
   /** Changing this value (e.g. the active table name) clears the current selection/edit state. */
   resetKey?: string | number;
+  /** Declared primary-key column names, for SQL/WHERE generation. Empty/undefined falls back to all-columns equality. */
+  primaryKeyColumns?: string[];
+  /** Name of the table being displayed — needed for INSERT/UPDATE/DELETE/SELECT statement generation. */
+  tableName: string;
+  /** Surfaces copy-to-clipboard success/failure. */
+  onToast?: (message: string, type: 'success' | 'error') => void;
+  /** Export the given rows (by key) via the app's Export flow. Hidden from the selection menu when omitted. */
+  onExportSelected?: (keys: Record<string, any>[]) => void;
+  /** Open the transform builder scoped to the given rows. Hidden from the selection menu when omitted. */
+  onTransformSelected?: (rows: any[][]) => void;
+}
+
+type RowActionItem = { label: string; run: () => void };
+
+function copyToClipboard(text: string, onToast?: (message: string, type: 'success' | 'error') => void) {
+  navigator.clipboard
+    .writeText(text)
+    .then(() => onToast?.('Copied to clipboard', 'success'))
+    .catch(() => onToast?.('Failed to copy to clipboard', 'error'));
 }
 
 function defaultRenderCell(val: any): React.ReactNode {
@@ -56,6 +90,11 @@ export default function RowGrid({
   onDeleteRow,
   onBulkDelete,
   resetKey,
+  primaryKeyColumns,
+  tableName,
+  onToast,
+  onExportSelected,
+  onTransformSelected,
 }: RowGridProps) {
   const [editingRowIndex, setEditingRowIndex] = useState<number | null>(null);
   const [editingRowValues, setEditingRowValues] = useState<Record<string, any>>({});
@@ -63,11 +102,24 @@ export default function RowGrid({
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkDeleteConfirmOpen, setBulkDeleteConfirmOpen] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [rowMenuOpen, setRowMenuOpen] = useState<number | null>(null);
+  const [rowMenuPos, setRowMenuPos] = useState<{ top: number; left: number } | null>(null);
+  const [editModalRow, setEditModalRow] = useState<{ row: any[]; values: Record<string, any> } | null>(null);
+  const [savingEditModal, setSavingEditModal] = useState(false);
+  const [copyModalTarget, setCopyModalTarget] = useState<{ scope: 'row'; row: any[] } | { scope: 'selection' } | null>(
+    null
+  );
+
+  const pkCols = primaryKeyColumns ?? [];
+  const tbl = tableName;
 
   useEffect(() => {
     setSelected(new Set());
     setEditingRowIndex(null);
     setEditingRowValues({});
+    setRowMenuOpen(null);
+    setEditModalRow(null);
+    setCopyModalTarget(null);
   }, [resetKey]);
 
   const cell = renderCell || ((val: any) => defaultRenderCell(val));
@@ -119,6 +171,74 @@ export default function RowGrid({
     }
   };
 
+  const rowMenuItems = (row: any[]): RowActionItem[] => [
+    { label: 'Copy as…', run: () => setCopyModalTarget({ scope: 'row', row }) },
+    {
+      label: 'Edit row (modal)',
+      run: () => {
+        const values: Record<string, any> = {};
+        columns.forEach((c, i) => {
+          values[c] = row[i];
+        });
+        setEditModalRow({ row, values });
+      },
+    },
+  ];
+
+  const rowCopyOptions = (row: any[]): CopyFormatOption[] => {
+    const single = [row];
+    const copy = (text: string) => copyToClipboard(text, onToast);
+    return [
+      { label: 'Copy as INSERT', run: () => copy(toInsertSQL(tbl, columns, single)) },
+      { label: 'Copy as UPDATE', run: () => copy(toUpdateSQL(tbl, columns, single, pkCols)) },
+      { label: 'Copy as DELETE', run: () => copy(toDeleteSQL(tbl, columns, single, pkCols)) },
+      { label: 'Copy as SQL VALUES', run: () => copy(toSQLValues(columns, single)) },
+      { label: 'Copy as CSV', run: () => copy(toCSV(columns, single)) },
+      { label: 'Copy as JSON', run: () => copy(toJSON(columns, single)) },
+      { label: 'Copy as XML', run: () => copy(toXML(columns, single)) },
+      { label: 'Copy as YAML', run: () => copy(toYAML(columns, single)) },
+      { label: 'Copy as Markdown row', run: () => copy(toMarkdownTable(columns, single)) },
+      { label: 'Copy as WHERE clause', run: () => copy(toWhereClause(columns, single, pkCols)) },
+      { label: 'Copy as SELECT statement', run: () => copy(toSelectSQL(tbl, columns, single, pkCols)) },
+    ];
+  };
+
+  const selectionCopyOptions = (): CopyFormatOption[] => {
+    const selRows = Array.from(selected).map((idx) => rows[idx]);
+    const copy = (text: string) => copyToClipboard(text, onToast);
+    return [
+      { label: 'Copy as INSERT', run: () => copy(toInsertSQL(tbl, columns, selRows)) },
+      { label: 'Copy as UPDATE', run: () => copy(toUpdateSQL(tbl, columns, selRows, pkCols)) },
+      { label: 'Copy as DELETE', run: () => copy(toDeleteSQL(tbl, columns, selRows, pkCols)) },
+      {
+        label: 'Copy as SQL VALUES (single INSERT)',
+        run: () =>
+          copy(
+            `INSERT INTO "${tbl}" (${columns.map((c) => `"${c}"`).join(', ')}) VALUES ${toSQLValues(columns, selRows)};`
+          ),
+      },
+      { label: 'Copy as CSV', run: () => copy(toCSV(columns, selRows)) },
+      { label: 'Copy as JSON', run: () => copy(toJSON(columns, selRows)) },
+      { label: 'Copy as JSONL', run: () => copy(toJSONL(columns, selRows)) },
+      { label: 'Copy as XML', run: () => copy(toXML(columns, selRows)) },
+      { label: 'Copy as YAML', run: () => copy(toYAML(columns, selRows)) },
+      { label: 'Copy as Markdown table', run: () => copy(toMarkdownTable(columns, selRows)) },
+      { label: 'Copy as WHERE clause', run: () => copy(toWhereClause(columns, selRows, pkCols)) },
+    ];
+  };
+
+  const saveEditModal = async () => {
+    if (!editModalRow) return;
+    setSavingEditModal(true);
+    try {
+      const key = getRowKey(editModalRow.row);
+      await onSaveEdit(key, editModalRow.values);
+      setEditModalRow(null);
+    } finally {
+      setSavingEditModal(false);
+    }
+  };
+
   return (
     <div className="flex flex-col gap-2 h-full min-h-0">
       {isWrite && selected.size > 0 && (
@@ -126,12 +246,36 @@ export default function RowGrid({
           <span className="text-xs text-slate-500 dark:text-slate-400">
             {selected.size} row{selected.size === 1 ? '' : 's'} selected
           </span>
-          <button
-            onClick={() => setBulkDeleteConfirmOpen(true)}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-red-600 hover:bg-red-500 text-white text-xs font-semibold shadow cursor-pointer"
-          >
-            <Trash2 className="w-3.5 h-3.5" /> Delete selected
-          </button>
+          <div className="flex items-center gap-2 relative">
+            <button
+              onClick={() => setCopyModalTarget({ scope: 'selection' })}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-850 text-slate-600 dark:text-slate-300 text-xs font-semibold cursor-pointer"
+            >
+              <Copy className="w-3.5 h-3.5" /> Copy as…
+            </button>
+            {onTransformSelected && (
+              <button
+                onClick={() => onTransformSelected(Array.from(selected).map((idx) => rows[idx]))}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-850 text-slate-600 dark:text-slate-300 text-xs font-semibold cursor-pointer"
+              >
+                <Wand2 className="w-3.5 h-3.5" /> Transform
+              </button>
+            )}
+            {onExportSelected && (
+              <button
+                onClick={() => onExportSelected(Array.from(selected).map((idx) => getRowKey(rows[idx])))}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-850 text-slate-600 dark:text-slate-300 text-xs font-semibold cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5" /> Export
+              </button>
+            )}
+            <button
+              onClick={() => setBulkDeleteConfirmOpen(true)}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-red-600 hover:bg-red-500 text-white text-xs font-semibold shadow cursor-pointer"
+            >
+              <Trash2 className="w-3.5 h-3.5" /> Delete selected
+            </button>
+          </div>
         </div>
       )}
 
@@ -160,7 +304,7 @@ export default function RowGrid({
                 )
               ))}
               {isWrite && (
-                <th className="px-3 py-2 font-medium border-b border-slate-200 dark:border-slate-800 w-24 text-right">
+                <th className="px-3 py-2 font-medium border-b border-slate-200 dark:border-slate-800 w-32 text-right">
                   Actions
                 </th>
               )}
@@ -246,6 +390,45 @@ export default function RowGrid({
                           >
                             <Trash2 className="w-4 h-4" />
                           </button>
+                          <span className="relative inline-block">
+                            <button
+                              onClick={(e) => {
+                                if (rowMenuOpen === rIdx) {
+                                  setRowMenuOpen(null);
+                                  return;
+                                }
+                                const rect = e.currentTarget.getBoundingClientRect();
+                                setRowMenuPos({ top: rect.bottom, left: rect.right - 224 });
+                                setRowMenuOpen(rIdx);
+                              }}
+                              title="More actions"
+                              className="text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-850 p-1.5 rounded transition-colors text-base cursor-pointer inline-flex items-center justify-center"
+                            >
+                              <MoreVertical className="w-4 h-4" />
+                            </button>
+                            {rowMenuOpen === rIdx && rowMenuPos && (
+                              <>
+                                <div className="fixed inset-0 z-40" onClick={() => setRowMenuOpen(null)} />
+                                <div
+                                  style={{ top: rowMenuPos.top, left: rowMenuPos.left }}
+                                  className="fixed w-56 max-h-80 overflow-y-auto rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-lg z-50 py-1 text-xs text-left flex flex-col"
+                                >
+                                  {rowMenuItems(row).map((action) => (
+                                    <button
+                                      key={action.label}
+                                      onClick={() => {
+                                        action.run();
+                                        setRowMenuOpen(null);
+                                      }}
+                                      className="w-full text-left px-3 py-1.5 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/60 cursor-pointer"
+                                    >
+                                      {action.label}
+                                    </button>
+                                  ))}
+                                </div>
+                              </>
+                            )}
+                          </span>
                         </>
                       )}
                     </td>
@@ -280,6 +463,74 @@ export default function RowGrid({
           body={`Are you sure you want to delete ${selected.size} selected row${selected.size === 1 ? '' : 's'}? This action is permanent and cannot be undone.`}
           onCancel={() => setBulkDeleteConfirmOpen(false)}
           onConfirm={handleBulkDelete}
+        />
+      )}
+
+      {editModalRow && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setEditModalRow(null)}
+        >
+          <div
+            className="w-full max-w-lg rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+              <h3 className="font-semibold text-slate-900 dark:text-white">Edit row</h3>
+              <button
+                onClick={() => setEditModalRow(null)}
+                className="text-slate-400 hover:text-slate-500 dark:hover:text-slate-300"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-4 space-y-3 max-h-[60vh] overflow-y-auto">
+              {columns.map((col) => {
+                const readOnly = isColumnReadOnly ? isColumnReadOnly(col) : false;
+                const numeric = isColumnNumeric ? isColumnNumeric(col) : false;
+                return (
+                  <label key={col} className="block">
+                    <span className="text-xs font-mono text-slate-500 dark:text-slate-400">{col}</span>
+                    <input
+                      type={numeric ? 'number' : 'text'}
+                      step="any"
+                      disabled={readOnly}
+                      value={editModalRow.values[col] ?? ''}
+                      onChange={(e) =>
+                        setEditModalRow((prev) =>
+                          prev ? { ...prev, values: { ...prev.values, [col]: e.target.value } } : prev
+                        )
+                      }
+                      className="mt-1 w-full px-2 py-1 rounded border border-slate-300 dark:border-slate-750 bg-white dark:bg-slate-950 text-slate-900 dark:text-white font-mono text-sm outline-none disabled:opacity-50"
+                    />
+                  </label>
+                );
+              })}
+            </div>
+            <div className="px-4 py-3 border-t border-slate-200 dark:border-slate-800 flex justify-end gap-2">
+              <button
+                onClick={() => setEditModalRow(null)}
+                className="px-3 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-850 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={saveEditModal}
+                disabled={savingEditModal}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow cursor-pointer disabled:opacity-50"
+              >
+                <Save className="w-3.5 h-3.5" /> {savingEditModal ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {copyModalTarget && (
+        <CopyFormatModal
+          title={copyModalTarget.scope === 'row' ? 'Copy row as…' : `Copy ${selected.size} selected row${selected.size === 1 ? '' : 's'} as…`}
+          options={copyModalTarget.scope === 'row' ? rowCopyOptions(copyModalTarget.row) : selectionCopyOptions()}
+          onCancel={() => setCopyModalTarget(null)}
         />
       )}
     </div>
