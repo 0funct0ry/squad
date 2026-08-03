@@ -211,6 +211,7 @@ func buildRegistry() map[string]GeneratorDef {
 	defs = append(defs, misc2Generators()...)
 	defs = append(defs, gitGenerators()...)
 	defs = append(defs, dockerGenerators()...)
+	defs = append(defs, unixGenerators()...)
 
 	m := make(map[string]GeneratorDef, len(defs))
 	for _, d := range defs {
