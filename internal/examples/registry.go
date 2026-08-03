@@ -3,16 +3,54 @@ package examples
 import (
 	"sort"
 
-	"github.com/0funct0ry/squad/internal/examples/placeholder1"
-	"github.com/0funct0ry/squad/internal/examples/placeholder2"
+	"github.com/0funct0ry/squad/internal/examples/audio"
+	"github.com/0funct0ry/squad/internal/examples/media"
+	"github.com/0funct0ry/squad/internal/examples/network"
+	"github.com/0funct0ry/squad/internal/examples/stay"
+	"github.com/0funct0ry/squad/internal/examples/transit"
+	"github.com/0funct0ry/squad/internal/examples/video"
 )
 
 // registry is the manually maintained list of canned example data models.
 // Adding a new one is: create a subpackage with a Schema constant, then add
 // one line here. No other code changes are required.
 var registry = []Example{
-	{Slug: "placeholder1", Name: "Placeholder: Blog", Description: "Minimal blog schema (authors, posts, comments) — scaffolding only", Schema: placeholder1.Schema},
-	{Slug: "placeholder2", Name: "Placeholder: Inventory", Description: "Minimal inventory schema (products, warehouses, stock) — scaffolding only", Schema: placeholder2.Schema},
+	{
+		Slug:        "network",
+		Name:        "Professional Networking Platform",
+		Description: "Minimal professional networking schema",
+		Schema:      network.Schema,
+	},
+	{
+		Slug:        "video",
+		Name:        "Video Sharing Platform",
+		Description: "Minimal video sharing schema",
+		Schema:      video.Schema,
+	},
+	{
+		Slug:        "media",
+		Name:        "Visual Social Network",
+		Description: "Minimal visual social network schema",
+		Schema:      media.Schema,
+	},
+	{
+		Slug:        "transit",
+		Name:        "Ride-Hailing Service",
+		Description: "Minimal ride-hailing service schema",
+		Schema:      transit.Schema,
+	},
+	{
+		Slug:        "audio",
+		Name:        "Audio Streaming Service",
+		Description: "Minimal audio streaming service schema",
+		Schema:      audio.Schema,
+	},
+	{
+		Slug:        "stay",
+		Name:        "Peer-to-Peer Lodging Marketplace",
+		Description: "Minimal peer-to-peer lodging marketplace schema",
+		Schema:      stay.Schema,
+	},
 }
 
 // All returns every registered example, sorted by Name.
