@@ -17,6 +17,7 @@ type cliConfig struct {
 	Write          bool
 	ReadOnlyPragma bool
 	LogLevel       string
+	AbbrTrigger    string
 	restFlags
 	moduleFlags
 	hookFlags
@@ -81,7 +82,7 @@ var cliCmd = &cobra.Command{
 		}
 
 		interactive := inlineSQL == "" && cli.IsStdinTerminal()
-		state := cli.NewState(database, resolvedPath, cliCfg.Write, interactive, readOnly, cliCfg.RestPort, cliCfg.RestBindAddr, cliCfg.Modules, modulesRoot, cliCfg.HooksEnabled)
+		state := cli.NewState(database, resolvedPath, cliCfg.Write, interactive, readOnly, cliCfg.RestPort, cliCfg.RestBindAddr, cliCfg.Modules, modulesRoot, cliCfg.HooksEnabled, cliCfg.AbbrTrigger)
 
 		if err := cli.Run(state, inlineSQL); err != nil {
 			fmt.Printf("Error: %v\n", err)
@@ -99,4 +100,5 @@ func init() {
 	registerModuleFlags(cliCmd.Flags(), &cliCfg.moduleFlags)
 	registerHookFlags(cliCmd.Flags(), &cliCfg.hookFlags)
 	registerHooksEnableFlag(cliCmd.Flags(), &cliCfg.HooksEnabled)
+	cliCmd.Flags().StringVarP(&cliCfg.AbbrTrigger, "abbr-trigger", "A", cli.DefaultAbbrTrigger, "Trigger prefix character for live .abbr expansion in the interactive REPL")
 }

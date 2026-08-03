@@ -110,6 +110,19 @@ type State struct {
 	// .bookmark/.bookmarks use (see bookmarks.go).
 	Bookmarks map[string]bookmarkProfile
 
+	// Aliases/Abbrs are lazily loaded from ~/.squad_aliases/~/.squad_abbrs on
+	// first .alias/.abbr use (see alias.go). Aliases expand a bare leading
+	// token once at submit time (Execute); Abbrs expand live in the readline
+	// buffer on an "AbbrTrigger+name " keystroke (see repl.go's Listener).
+	Aliases map[string]string
+	Abbrs   map[string]string
+
+	// AbbrTrigger is the single-character prefix that marks a token in the
+	// input buffer as an abbreviation to expand (".abbr"'s "~cvt " ->
+	// "CREATE VIRTUAL TABLE " behavior), configurable via `squad cli
+	// --abbr-trigger`/`-A`. Defaults to ":" (see abbrTrigger()).
+	AbbrTrigger string
+
 	// Virtual table modules (".modules"/".mounts"/".mount"/".unmount").
 	// ModulesEnabled mirrors --modules; MountStore is always non-nil so
 	// dot-commands can list/validate against it uniformly, but mounting
@@ -126,7 +139,7 @@ type State struct {
 	Quit bool
 }
 
-func NewState(database *sql.DB, path string, write, interactive, readOnly bool, restPort int, restBindAddr string, modulesEnabled bool, modulesRoot string, hooksEnabled bool) *State {
+func NewState(database *sql.DB, path string, write, interactive, readOnly bool, restPort int, restBindAddr string, modulesEnabled bool, modulesRoot string, hooksEnabled bool, abbrTrigger string) *State {
 	mode := ModeList
 	headers := false
 	if interactive {
@@ -151,7 +164,21 @@ func NewState(database *sql.DB, path string, write, interactive, readOnly bool, 
 		ModulesRoot:        modulesRoot,
 		MountStore:         vtab.NewMountStore(),
 		HooksEnabled:       hooksEnabled,
+		AbbrTrigger:        abbrTrigger,
 	}
+}
+
+// DefaultAbbrTrigger is the fallback abbr trigger prefix used when
+// --abbr-trigger isn't set (or, for callers outside cmd/cli.go, at all).
+const DefaultAbbrTrigger = ":"
+
+// abbrTrigger returns the configured abbr trigger, falling back to
+// DefaultAbbrTrigger if unset/blank.
+func (s *State) abbrTrigger() string {
+	if s.AbbrTrigger == "" {
+		return DefaultAbbrTrigger
+	}
+	return s.AbbrTrigger
 }
 
 // closeOnce closes and clears any .once redirect, restoring Out to stdout.

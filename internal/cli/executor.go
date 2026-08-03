@@ -61,6 +61,9 @@ func (s *State) Execute(statement string) {
 		return
 	}
 
+	trimmed = s.expandAlias(trimmed)
+	statement = trimmed
+
 	rendered, err := preprocessTemplate(statement)
 	if err != nil {
 		s.shellError(err)

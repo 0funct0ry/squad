@@ -21,7 +21,8 @@ var dotCommandNames = []string{
 	".stats", ".explain", ".plan", ".bookmark", ".bookmarks", ".shell", ".sh",
 	".watch", ".open", ".backup", ".clone", ".seed", ".diff", ".constraints",
 	".size", ".stat", ".repeat", ".modules", ".mounts", ".mount", ".unmount",
-	".functions", ".hooks",
+	".functions", ".hooks", ".alias", ".unalias", ".aliases", ".abbr",
+	".unabbr", ".abbrs",
 }
 
 const helpText = `.help                     show this message
@@ -83,6 +84,12 @@ const helpText = `.help                     show this message
 .hooks enable|disable ID  toggle a hook (--write)
 .hooks rm ID              delete a hook and drop its trigger (--write)
 .hooks log ID             show a hook's execution log
+.alias                    list defined aliases
+.alias NAME=EXPANSION     define an alias: a bare leading token NAME expands to EXPANSION once at submit time
+.alias -d NAME / .unalias NAME  remove an alias
+.abbr                     list defined abbreviations
+.abbr NAME=EXPANSION      define an abbreviation: typing TRIGGER+NAME then Space expands it live in the input buffer (TRIGGER defaults to ':', see --abbr-trigger)
+.abbr -d NAME / .unabbr NAME  remove an abbreviation
 `
 
 // dispatchDotCommand parses and executes a dot-command line. ".echo" and
@@ -140,6 +147,14 @@ func (s *State) dispatchDotCommand(line string) {
 		s.cmdHooks(strings.TrimSpace(strings.TrimPrefix(trimmed, ".hooks")))
 		return
 	}
+	if trimmed == ".alias" || strings.HasPrefix(trimmed, ".alias ") {
+		s.cmdAlias(strings.TrimPrefix(trimmed, ".alias"))
+		return
+	}
+	if trimmed == ".abbr" || strings.HasPrefix(trimmed, ".abbr ") {
+		s.cmdAbbr(strings.TrimPrefix(trimmed, ".abbr"))
+		return
+	}
 
 	fields := splitDotCommand(line)
 	if len(fields) == 0 {
@@ -151,6 +166,9 @@ func (s *State) dispatchDotCommand(line string) {
 	switch cmd {
 	case ".help":
 		fmt.Fprint(s.Out, helpText)
+		if trigger := s.abbrTrigger(); trigger != DefaultAbbrTrigger {
+			fmt.Fprintf(s.Out, "(current abbr trigger: %q, set via --abbr-trigger)\n", trigger)
+		}
 	case ".quit", ".exit":
 		s.Quit = true
 	case ".tables":
@@ -229,6 +247,14 @@ func (s *State) dispatchDotCommand(line string) {
 		s.cmdMounts()
 	case ".unmount":
 		s.cmdUnmount(args)
+	case ".aliases":
+		s.cmdAliases()
+	case ".unalias":
+		s.cmdUnalias(args)
+	case ".abbrs":
+		s.cmdAbbrs()
+	case ".unabbr":
+		s.cmdUnabbr(args)
 	default:
 		s.shellError(fmt.Errorf("unknown command or invalid arguments: %q. Enter \".help\" for help", cmd))
 	}

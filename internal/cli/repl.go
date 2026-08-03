@@ -40,6 +40,7 @@ func RunREPL(s *State) error {
 		AutoComplete:    newCompleter(s),
 		InterruptPrompt: "^C",
 		EOFPrompt:       "^D",
+		Listener:        abbrListener(s),
 	})
 	if err != nil {
 		return err
@@ -104,6 +105,53 @@ func RunREPL(s *State) error {
 		if s.Quit {
 			return nil
 		}
+	}
+}
+
+// abbrListener returns a readline.Listener that expands a
+// "<trigger>name " token into its defined abbreviation live in the input
+// buffer, where <trigger> is s.AbbrTrigger (default ":", configurable via
+// `squad cli --abbr-trigger`/`-A`). It only ever acts on the Space keypress;
+// every other key is a cheap no-op (ok=false, buffer unchanged) since Do is
+// invoked on literally every keystroke.
+func abbrListener(s *State) readline.Listener {
+	return func(line []rune, pos int, key rune) ([]rune, int, bool) {
+		if key != ' ' {
+			return nil, 0, false
+		}
+		s.loadAbbrs()
+		if len(s.Abbrs) == 0 {
+			return nil, 0, false
+		}
+		if pos == 0 || line[pos-1] != ' ' {
+			// The just-typed space is already written into the buffer at
+			// pos-1 by the time the Listener runs; if it isn't there,
+			// something else changed the buffer (paste, etc.) -- no-op.
+			return nil, 0, false
+		}
+
+		trigger := s.abbrTrigger()
+		before := string(line[:pos-1])
+		start := len(before)
+		for start > 0 {
+			c := before[start-1]
+			if c == ' ' || c == '\t' {
+				break
+			}
+			start--
+		}
+		token := before[start:]
+		if !strings.HasPrefix(token, trigger) {
+			return nil, 0, false
+		}
+		expansion, ok := s.Abbrs[strings.TrimPrefix(token, trigger)]
+		if !ok {
+			return nil, 0, false
+		}
+
+		newLine := before[:start] + expansion + " " + string(line[pos:])
+		newPos := start + len(expansion) + 1
+		return []rune(newLine), newPos, true
 	}
 }
 

@@ -27,7 +27,7 @@ func newModulesTestState(t *testing.T, modulesEnabled bool) (*State, *bytes.Buff
 	t.Cleanup(func() { sqlDB.Close() })
 
 	var buf bytes.Buffer
-	s := NewState(sqlDB, ":memory:", true, false, false, 0, "127.0.0.1", modulesEnabled, root, false)
+	s := NewState(sqlDB, ":memory:", true, false, false, 0, "127.0.0.1", modulesEnabled, root, false, "")
 	s.Out = &buf
 	return s, &buf
 }

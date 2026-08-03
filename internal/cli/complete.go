@@ -33,6 +33,9 @@ func (c *completer) Do(line []rune, pos int) ([][]rune, int) {
 	if strings.HasPrefix(strings.TrimLeft(text, " "), ".") {
 		return c.completeDot(text)
 	}
+	if word, _ := currentWord(text); strings.HasPrefix(word, c.state.abbrTrigger()) {
+		return toCandidates(word, c.state.abbrNames())
+	}
 	return c.completeSQL(text)
 }
 
