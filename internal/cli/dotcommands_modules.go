@@ -11,10 +11,10 @@ import (
 )
 
 // tokenizeMountArgs splits a `.mount` argument string into shell-like
-// tokens, honoring single/double quotes so values containing spaces, globs,
-// or shell metacharacters (--glob '*.jpg', --query 'query($s:String!){ ... }')
-// survive intact. Simpler than splitFileAndQuery's bracket/backtick handling
-// (mount flag values never need those), but the same quote-aware approach.
+// tokens, honoring single/double quotes so values containing spaces or
+// shell metacharacters (e.g. --regex '[,;]\s*') survive intact. Simpler
+// than splitFileAndQuery's bracket/backtick handling (mount flag values
+// never need those), but the same quote-aware approach.
 func tokenizeMountArgs(text string) ([]string, error) {
 	var tokens []string
 	var cur strings.Builder
@@ -56,7 +56,7 @@ func tokenizeMountArgs(text string) ([]string, error) {
 }
 
 // kebabFlagName converts a snake_case (or already-kebab) argument key into
-// its --flag-name form: dsn_env -> --dsn-env, max_depth -> --max-depth.
+// its --flag-name form, e.g. multi_doc -> --multi-doc.
 func kebabFlagName(key string) string {
 	return "--" + strings.ReplaceAll(key, "_", "-")
 }

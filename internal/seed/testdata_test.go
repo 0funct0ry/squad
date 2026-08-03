@@ -2,33 +2,21 @@ package seed
 
 import (
 	"database/sql"
-	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"github.com/0funct0ry/squad/internal/db"
+	"github.com/0funct0ry/squad/internal/testfixtures"
 )
 
-// openScratchExample copies examples/<name>.db into a temp file and opens it
-// read-write, so tests never mutate the checked-in fixtures.
+// openScratchExample builds the named fixture database (blog/library/types_zoo)
+// fresh into a temp file and opens it read-write.
 func openScratchExample(t *testing.T, name string) *sql.DB {
 	t.Helper()
 
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("failed to resolve caller for examples path")
-	}
-	src := filepath.Join(filepath.Dir(thisFile), "..", "..", "examples", name+".db")
-
-	srcBytes, err := os.ReadFile(src)
-	if err != nil {
-		t.Fatalf("failed to read example db %s: %v", src, err)
-	}
-
 	dst := filepath.Join(t.TempDir(), name+".db")
-	if err := os.WriteFile(dst, srcBytes, 0o644); err != nil {
-		t.Fatalf("failed to write scratch db: %v", err)
+	if err := buildFixture(name, dst); err != nil {
+		t.Fatalf("failed to build fixture db %s: %v", name, err)
 	}
 
 	database, err := db.OpenDB(dst, false)
@@ -37,6 +25,19 @@ func openScratchExample(t *testing.T, name string) *sql.DB {
 	}
 	t.Cleanup(func() { database.Close() })
 	return database
+}
+
+func buildFixture(name, path string) error {
+	switch name {
+	case "blog":
+		return testfixtures.BuildBlog(path)
+	case "library":
+		return testfixtures.BuildLibrary(path)
+	case "types_zoo":
+		return testfixtures.BuildTypesZoo(path)
+	default:
+		panic("testfixtures: unknown fixture " + name)
+	}
 }
 
 func openScratchDB(t *testing.T) *sql.DB {

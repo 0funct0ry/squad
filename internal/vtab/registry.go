@@ -1,9 +1,13 @@
-// Package vtab implements squad's --modules feature (M10e/M10f):
+// Package vtab implements squad's --modules feature (M10e):
 // Go-implemented SQLite virtual table modules, mounted on demand into the
-// temp schema so external sources (files, generators, and — in M10f —
-// network/host/interop targets) can be queried and joined like ordinary
-// tables without an import/export round trip. Nothing in this package
-// registers anything unless the process was started with --modules.
+// temp schema so external sources (local files and in-process generators)
+// can be queried and joined like ordinary tables without an import/export
+// round trip. Nothing in this package registers anything unless the
+// process was started with --modules. A network/host/interop module set
+// was designed and prototyped as a follow-on and deliberately not shipped —
+// see internal-docs/VTABS.md's "## Excluded" section for the security
+// rationale; do not add such a module here without a real per-caller
+// authorization model.
 package vtab
 
 import (

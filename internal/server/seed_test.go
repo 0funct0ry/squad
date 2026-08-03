@@ -5,32 +5,23 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"github.com/0funct0ry/squad/internal/db"
+	"github.com/0funct0ry/squad/internal/testfixtures"
 )
 
-// scratchExamplePath copies examples/<name>.db into a temp file, so tests
-// never mutate the checked-in fixtures.
+// scratchExamplePath builds the named fixture database fresh into a temp
+// file, so tests never depend on checked-in fixtures or external tooling.
 func scratchExamplePath(t *testing.T, name string) string {
 	t.Helper()
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("failed to resolve caller for examples path")
-	}
-	src := filepath.Join(filepath.Dir(thisFile), "..", "..", "examples", name+".db")
-
-	srcBytes, err := os.ReadFile(src)
-	if err != nil {
-		t.Fatalf("failed to read example db %s: %v", src, err)
-	}
-
 	dst := filepath.Join(t.TempDir(), name+".db")
-	if err := os.WriteFile(dst, srcBytes, 0o644); err != nil {
-		t.Fatalf("failed to write scratch db: %v", err)
+	if name != "blog" {
+		t.Fatalf("scratchExamplePath: no fixture builder registered for %q", name)
+	}
+	if err := testfixtures.BuildBlog(dst); err != nil {
+		t.Fatalf("failed to build fixture db %s: %v", name, err)
 	}
 	return dst
 }
