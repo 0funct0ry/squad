@@ -306,6 +306,89 @@ func TestVirtualTableIntrospection(t *testing.T) {
 	}
 }
 
+// TestViewRowsQuery is the sibling of TestVirtualTableIntrospection for views.
+// A view reports no primary key from PRAGMA table_info and its DDL contains
+// neither "without rowid" nor "virtual table", so it used to clear every guard
+// in BuildTableQuery and get a "rowid, *" prefix — making the browser fail with
+// "no such column: rowid" for *every* view (and for exports, which share
+// BuildTableQuery). The multi-table join with a LEFT JOIN mirrors the shape of
+// internal/examples/transit's vw_completed_trip_summary, where this surfaced.
+func TestViewRowsQuery(t *testing.T) {
+	sqlDB, err := OpenDB(":memory:", false)
+	if err != nil {
+		t.Fatalf("failed to open db: %v", err)
+	}
+	defer sqlDB.Close()
+
+	if _, err := sqlDB.Exec(`
+		CREATE TABLE trips (
+			trip_id TEXT PRIMARY KEY,
+			status  TEXT NOT NULL
+		);
+		CREATE TABLE trip_fares (
+			trip_id    TEXT PRIMARY KEY REFERENCES trips(trip_id),
+			total_fare REAL NOT NULL
+		);
+		CREATE TABLE ratings (
+			trip_id TEXT NOT NULL REFERENCES trips(trip_id),
+			score   INTEGER NOT NULL
+		);
+		CREATE VIEW trip_summary AS
+		SELECT t.trip_id, f.total_fare, r.score AS rating
+		FROM trips t
+		JOIN trip_fares f ON f.trip_id = t.trip_id
+		LEFT JOIN ratings r ON r.trip_id = t.trip_id
+		WHERE t.status = 'completed';
+
+		INSERT INTO trips VALUES ('t1', 'completed'), ('t2', 'completed'), ('t3', 'cancelled');
+		INSERT INTO trip_fares VALUES ('t1', 12.5), ('t2', 30.0), ('t3', 7.25);
+		INSERT INTO ratings VALUES ('t1', 5);
+	`); err != nil {
+		t.Fatalf("failed to seed db: %v", err)
+	}
+
+	schema, err := GetTableSchema(sqlDB, "trip_summary")
+	if err != nil {
+		t.Fatalf("GetTableSchema on a view: %v", err)
+	}
+	if schema.Type != "view" {
+		t.Fatalf("expected type view, got %q", schema.Type)
+	}
+	// The preconditions that made the rowid prefix fire: nothing else about a
+	// view distinguishes it from a PK-less rowid table.
+	if len(schema.PrimaryKey) != 0 || schema.WithoutRowid || schema.IsVirtual {
+		t.Errorf("expected pk=[] withoutRowid=false isVirtual=false for a view, got pk=%v withoutRowid=%v isVirtual=%v",
+			schema.PrimaryKey, schema.WithoutRowid, schema.IsVirtual)
+	}
+
+	selectQuery, _, _, _, err := BuildTableQuery(sqlDB, "trip_summary", RowQueryParams{})
+	if err != nil {
+		t.Fatalf("BuildTableQuery: %v", err)
+	}
+	if strings.Contains(selectQuery, "rowid, *") {
+		t.Errorf("expected no rowid prefix for a view, got query %q", selectQuery)
+	}
+
+	// The regression itself: this is what the sidebar does when a view is clicked.
+	res, err := GetTableRows(sqlDB, "trip_summary", RowQueryParams{Limit: 10, OrderBy: "total_fare", Dir: "desc"})
+	if err != nil {
+		t.Fatalf("GetTableRows on a view: %v", err)
+	}
+	if res.Total != 2 {
+		t.Errorf("expected 2 rows matching the view's WHERE, got total=%d", res.Total)
+	}
+	if len(res.Columns) != 3 || res.Columns[0] != "trip_id" {
+		t.Errorf("expected the view's own 3 columns starting at trip_id, got %v", res.Columns)
+	}
+	if len(res.Rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(res.Rows))
+	}
+	// ORDER BY total_fare DESC: t2 (30.0) before t1 (12.5).
+	if got := res.Rows[0][0]; got != "t2" {
+		t.Errorf("expected t2 first under ORDER BY total_fare DESC, got %v", got)
+	}
+}
+
 // TestGetTablesMarksMainSchemaVirtualTables covers the case a mount doesn't:
 // a virtual table declared directly in main (e.g. a user typing `CREATE
 // VIRTUAL TABLE ... USING csv(...)` into the SQL editor, rather than

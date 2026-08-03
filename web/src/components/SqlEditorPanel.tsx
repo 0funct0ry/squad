@@ -446,15 +446,22 @@ export default function SqlEditorPanel({
   return (
     <section className="space-y-4 h-full flex flex-col min-h-0">
       <div className="flex gap-4 flex-1 min-h-0">
-        {/* Left: Editor and Results */}
-        <div className="flex-1 flex flex-col min-h-0 gap-4">
+        {/* Left: Editor and Results.
+            min-w-0 is load-bearing: without it this flex item keeps the default
+            min-width:auto, so a single long unwrapped line in CodeMirror sets a
+            content-based minimum that widens the column past its share — pushing
+            the history sidebar off screen instead of letting .cm-scroller scroll. */}
+        <div className="flex-1 min-w-0 flex flex-col min-h-0 gap-4">
           <div
             className={`border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden bg-white dark:bg-slate-900 flex flex-col ${maximized ? 'flex-1' : 'shrink-0'}`}
             style={maximized ? undefined : { height: editorHeight }}
           >
             <div className="flex items-center justify-between px-3 py-2 bg-slate-100 dark:bg-slate-800/60 text-sm border-b border-slate-200 dark:border-slate-800 shrink-0">
-              <span className="font-medium text-slate-700 dark:text-slate-300">query.sql</span>
-              <div className="flex items-center gap-2">
+              {/* The filename yields first when the toolbar runs out of room —
+                  the card clips (overflow-hidden), so without this the Run
+                  button is the thing that disappears at narrow widths. */}
+              <span className="font-medium text-slate-700 dark:text-slate-300 min-w-0 truncate">query.sql</span>
+              <div className="flex items-center gap-2 shrink-0">
                 {examplesList && (
                   <button
                     onClick={onOpenExamplesPicker}

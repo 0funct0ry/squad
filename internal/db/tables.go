@@ -560,7 +560,13 @@ func BuildTableQuery(db Queryer, tableName string, params RowQueryParams) (strin
 
 	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM %s%s", quotedTable, wherePart)
 	selectFields := "*"
-	if len(schema.PrimaryKey) == 0 && !schema.WithoutRowid && !schema.IsVirtual {
+	// A view never reports a primary key from PRAGMA table_info, and its DDL
+	// contains neither "without rowid" nor "virtual table" — so it clears the
+	// other three guards and would get a rowid prefix it can't satisfy
+	// ("no such column: rowid" at prepare time). Views have no row identity to
+	// offer here anyway: a view's rows are read-only in the UI, and the row
+	// update/delete handlers reject them for want of a key.
+	if schema.Type != "view" && len(schema.PrimaryKey) == 0 && !schema.WithoutRowid && !schema.IsVirtual {
 		selectFields = "rowid, *"
 	}
 	selectQuery := fmt.Sprintf("SELECT %s FROM %s%s", selectFields, quotedTable, wherePart)

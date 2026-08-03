@@ -19,6 +19,8 @@ import {
   Upload,
   Columns3,
   Puzzle,
+  Table2,
+  Eye,
   Wand2,
   Webhook,
 } from 'lucide-react';
@@ -2220,9 +2222,19 @@ export default function App() {
                       >
                         <Puzzle className="w-3.5 h-3.5 text-violet-500 dark:text-violet-400" />
                       </span>
+                    ) : t.type === 'view' ? (
+                      <span
+                        className="text-slate-400 dark:text-slate-500 shrink-0"
+                        title="View"
+                      >
+                        <Eye className="w-3.5 h-3.5" />
+                      </span>
                     ) : (
-                      <span className="text-slate-400 dark:text-slate-500 shrink-0">
-                        {t.type === 'view' ? '◫' : '▤'}
+                      <span
+                        className="text-slate-400 dark:text-slate-500 shrink-0"
+                        title="Table"
+                      >
+                        <Table2 className="w-3.5 h-3.5" />
                       </span>
                     )}
                     <span className="font-medium font-mono text-xs truncate">{t.name}</span>
@@ -3730,14 +3742,14 @@ export default function App() {
                             <span className="text-xs text-slate-400 dark:text-slate-500">Tables</span>
                             <div className="text-2xl font-bold text-slate-900 dark:text-white mt-1">{meta?.tableCount ?? 0}</div>
                           </div>
-                          <span className="text-2xl opacity-60">▤</span>
+                          <Table2 className="w-6 h-6 text-slate-400 dark:text-slate-500 opacity-60" />
                         </div>
                         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 shadow-sm flex items-center justify-between">
                           <div>
                             <span className="text-xs text-slate-400 dark:text-slate-500">Views</span>
                             <div className="text-2xl font-bold text-slate-900 dark:text-white mt-1">{meta?.viewCount ?? 0}</div>
                           </div>
-                          <span className="text-2xl opacity-60">◫</span>
+                          <Eye className="w-6 h-6 text-slate-400 dark:text-slate-500 opacity-60" />
                         </div>
                       </div>
 
