@@ -27,10 +27,10 @@ func buildTemplateFuncMap() template.FuncMap {
 		}
 		schema := meta.OptionsSchema
 		// text/template function names must be valid Go identifiers (no
-		// dots), so generators are exposed only by their flat registry name
-		// (e.g. {{firstName}}, {{email}}) -- matching the names/aliases
-		// internal/seed already uses, not a synthetic "group.name" form.
-		fm[name] = makeGeneratorTemplateFunc(name, affinity, schema)
+		// dots), so dot-namespaced generator names (e.g. "git.branchName",
+		// added in M12) are exposed under a dot-stripped camelCase alias
+		// (e.g. {{gitBranchName}}) instead of the registry name verbatim.
+		fm[templateFuncName(name)] = makeGeneratorTemplateFunc(name, affinity, schema)
 	}
 
 	for _, name := range seed.FormulaFuncNames() {
@@ -48,6 +48,26 @@ func buildTemplateFuncMap() template.FuncMap {
 	}
 
 	return fm
+}
+
+// templateFuncName converts a dot-namespaced generator name (e.g.
+// "git.branchName") into a valid Go identifier for use as a text/template
+// function name (e.g. "gitBranchName") by removing the dots and
+// capitalizing the following segment. Names without dots pass through
+// unchanged.
+func templateFuncName(name string) string {
+	if !strings.Contains(name, ".") {
+		return name
+	}
+	parts := strings.Split(name, ".")
+	out := parts[0]
+	for _, p := range parts[1:] {
+		if p == "" {
+			continue
+		}
+		out += strings.ToUpper(p[:1]) + p[1:]
+	}
+	return out
 }
 
 // makeGeneratorTemplateFunc returns a template function that calls the named

@@ -23,6 +23,7 @@ import {
   Image as ImageIcon,
   AudioLines,
   ListChecks,
+  GitBranch,
   type LucideIcon,
 } from 'lucide-react';
 import { sniffBase64, dataUriFromBase64, type BlobMediaType } from '../lib/blobMedia';
@@ -95,6 +96,7 @@ const GROUP_PRESENTATION: Record<string, { label: string; icon: LucideIcon }> = 
   special: { label: 'Special', icon: Boxes },
   media: { label: 'Media', icon: ImageIcon },
   'custom-list': { label: 'Custom List', icon: ListChecks },
+  git: { label: 'Git', icon: GitBranch },
 };
 
 const FALLBACK_PRESENTATION = { label: '', icon: Boxes };
