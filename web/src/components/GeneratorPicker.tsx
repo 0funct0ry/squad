@@ -25,6 +25,7 @@ import {
   ListChecks,
   GitBranch,
   HardDrive,
+  CreditCard,
   type LucideIcon,
 } from 'lucide-react';
 import { sniffBase64, dataUriFromBase64, type BlobMediaType } from '../lib/blobMedia';
@@ -99,6 +100,7 @@ const GROUP_PRESENTATION: Record<string, { label: string; icon: LucideIcon }> = 
   'custom-list': { label: 'Custom List', icon: ListChecks },
   git: { label: 'Git', icon: GitBranch },
   unix: { label: 'Unix', icon: HardDrive },
+  stripe: { label: 'Stripe', icon: CreditCard },
 };
 
 const FALLBACK_PRESENTATION = { label: '', icon: Boxes };

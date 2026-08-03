@@ -27,6 +27,24 @@ func hexString(n int) string {
 	return string(out)
 }
 
+// alnumString returns n random alphanumeric characters (0-9A-Za-z), matching
+// the shape of Stripe-style object IDs.
+func alnumString(n int) string {
+	const digits = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		for i := range b {
+			b[i] = digits[gofakeit.Number(0, len(digits)-1)]
+		}
+		return string(b)
+	}
+	out := make([]byte, n)
+	for i, v := range b {
+		out[i] = digits[int(v)%len(digits)]
+	}
+	return string(out)
+}
+
 // weightedPick picks one of items using the parallel weights slice (higher
 // weight = more likely). Panics if the slices differ in length or are empty,
 // which indicates a programmer error in a generator definition.
