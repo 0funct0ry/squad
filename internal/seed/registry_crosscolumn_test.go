@@ -19,7 +19,7 @@ func TestDependentOneOf_BranchesOnDependencyValue(t *testing.T) {
 			"cases":   "SHIPPED => TRACK-1|TRACK-2\ndefault => NONE",
 		}},
 	}
-	gen, err := NewRowGenerator(nil, schema, specs)
+	gen, err := NewRowGenerator(nil, schema, specs, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func TestDependentOneOf_NoMatchNoDefaultErrors(t *testing.T) {
 		"status":          {Generator: "oneOf", Options: map[string]any{"values": "A,B"}},
 		"tracking_number": {Generator: "dependentOneOf", Options: map[string]any{"columns": []string{"status"}, "cases": "C => x"}},
 	}
-	gen, err := NewRowGenerator(nil, schema, specs)
+	gen, err := NewRowGenerator(nil, schema, specs, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestCustomDateSequence_MonotonicOrderingAndSkip(t *testing.T) {
 		"paid_at":    {Generator: "customDateSequence", Options: map[string]any{"columns": milestones, "gaps": "10-20,10-20"}},
 		"shipped_at": {Generator: "customDateSequence", Options: map[string]any{"columns": milestones, "gaps": "10-20,10-20"}},
 	}
-	gen, err := NewRowGenerator(nil, schema, specs)
+	gen, err := NewRowGenerator(nil, schema, specs, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestCustomDateSequence_SkipProbabilityLeavesLaterMilestoneNull(t *testing.T
 		"created_at":   {Generator: "customDateSequence", Options: map[string]any{"columns": milestones, "gaps": "10-20"}},
 		"delivered_at": {Generator: "customDateSequence", Options: map[string]any{"columns": milestones, "gaps": "10-20", "skipProbability": 1.0}},
 	}
-	gen, err := NewRowGenerator(nil, schema, specs)
+	gen, err := NewRowGenerator(nil, schema, specs, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestStatusTransitionLog_ValidWalkEndingAtRealStatus(t *testing.T) {
 		"status":  {Generator: "oneOf", Options: map[string]any{"values": "CAPTURED,PENDING"}},
 		"history": {Generator: "statusTransitionLog", Options: map[string]any{"columns": []string{"status"}, "transitions": transitions}},
 	}
-	gen, err := NewRowGenerator(nil, schema, specs)
+	gen, err := NewRowGenerator(nil, schema, specs, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestChecksumOfColumns_MatchesManualRecompute(t *testing.T) {
 		"b":    {Generator: "oneOf", Options: map[string]any{"values": "1,2"}},
 		"hash": {Generator: "checksumOfColumns", Options: map[string]any{"columns": []string{"a", "b"}, "algorithm": "sha256", "separator": "|"}},
 	}
-	gen, err := NewRowGenerator(nil, schema, specs)
+	gen, err := NewRowGenerator(nil, schema, specs, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestSlugFromColumn_ProducesValidSlug(t *testing.T) {
 		"title": {Generator: "oneOf", Options: map[string]any{"values": "My Blog Post Title!,Another One??"}},
 		"slug":  {Generator: "slugFromColumn", Options: map[string]any{"columns": []string{"title"}}},
 	}
-	gen, err := NewRowGenerator(nil, schema, specs)
+	gen, err := NewRowGenerator(nil, schema, specs, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestSlugFromColumn_AppendsSuffix(t *testing.T) {
 		"title": {Generator: "oneOf", Options: map[string]any{"values": "same,same2"}},
 		"slug":  {Generator: "slugFromColumn", Options: map[string]any{"columns": []string{"title"}, "suffixLength": 4}},
 	}
-	gen, err := NewRowGenerator(nil, schema, specs)
+	gen, err := NewRowGenerator(nil, schema, specs, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func TestJSONTemplate_SubstitutesColumnsAndProducesValidJSON(t *testing.T) {
 		"username": {Generator: "oneOf", Options: map[string]any{"values": "alice,bob"}},
 		"payload":  {Generator: "jsonTemplate", Options: map[string]any{"columns": []string{"username"}, "template": `{"user": "{{column:username}}", "active": true}`}},
 	}
-	gen, err := NewRowGenerator(nil, schema, specs)
+	gen, err := NewRowGenerator(nil, schema, specs, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +248,7 @@ func TestJSONTemplate_MalformedAfterSubstitutionErrors(t *testing.T) {
 		"name":    {Generator: "oneOf", Options: map[string]any{"values": "he said \"hi\"\nshe said \"bye\""}},
 		"payload": {Generator: "jsonTemplate", Options: map[string]any{"columns": []string{"name"}, "template": `{"name": "{{column:name}}"}`}},
 	}
-	gen, err := NewRowGenerator(nil, schema, specs)
+	gen, err := NewRowGenerator(nil, schema, specs, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +262,7 @@ func TestJSONTemplate_RejectsContextDependentNestedGenerator(t *testing.T) {
 	specs := map[string]ColumnSpec{
 		"payload": {Generator: "jsonTemplate", Options: map[string]any{"template": `{"id": "{{generator:formula}}"}`}},
 	}
-	gen, err := NewRowGenerator(nil, schema, specs)
+	gen, err := NewRowGenerator(nil, schema, specs, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +277,7 @@ func TestJSONTemplate_ShorthandTokensEquivalentToLongForm(t *testing.T) {
 		"username": {Generator: "oneOf", Options: map[string]any{"values": "alice,bob"}},
 		"payload":  {Generator: "jsonTemplate", Options: map[string]any{"columns": []string{"username"}, "template": `{"user": "{{$username}}", "n": {{@int({"min":1,"max":1})}}}`}},
 	}
-	gen, err := NewRowGenerator(nil, schema, specs)
+	gen, err := NewRowGenerator(nil, schema, specs, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +304,7 @@ func TestTemplate_ProducesPlainStringWithoutJSONValidation(t *testing.T) {
 		"username": {Generator: "oneOf", Options: map[string]any{"values": "alice,alicia"}},
 		"bio":      {Generator: "template", Options: map[string]any{"columns": []string{"username"}, "template": `Hi, I'm {{column:username}}! Say "hello" back.`}},
 	}
-	gen, err := NewRowGenerator(nil, schema, specs)
+	gen, err := NewRowGenerator(nil, schema, specs, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +324,7 @@ func TestTemplate_ShorthandGeneratorToken(t *testing.T) {
 		"username": {Generator: "oneOf", Options: map[string]any{"values": "alice,alicia"}},
 		"handle":   {Generator: "template", Options: map[string]any{"columns": []string{"username"}, "template": `{{$username}}@{{@domainName}}`}},
 	}
-	gen, err := NewRowGenerator(nil, schema, specs)
+	gen, err := NewRowGenerator(nil, schema, specs, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +344,7 @@ func TestTemplate_RejectsContextDependentNestedGenerator(t *testing.T) {
 	specs := map[string]ColumnSpec{
 		"payload": {Generator: "template", Options: map[string]any{"template": `id={{@formula}}`}},
 	}
-	gen, err := NewRowGenerator(nil, schema, specs)
+	gen, err := NewRowGenerator(nil, schema, specs, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,7 +358,7 @@ func TestTemplate_UnknownColumnReferenceErrors(t *testing.T) {
 	specs := map[string]ColumnSpec{
 		"payload": {Generator: "template", Options: map[string]any{"template": `{{$doesNotExist}}`}},
 	}
-	gen, err := NewRowGenerator(nil, schema, specs)
+	gen, err := NewRowGenerator(nil, schema, specs, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

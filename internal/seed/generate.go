@@ -30,6 +30,32 @@ func (e *EmptyReferenceError) Error() string {
 
 type fkPool struct {
 	values []any
+	// unique marks a pool that must be sampled without replacement, because
+	// at least one column drawing from it is itself unique-constrained (e.g.
+	// a PK that's also a foreignKey, a genuine 1:1 relationship). pos is the
+	// next unused index into values for that case.
+	unique bool
+	pos    int
+}
+
+// UniqueForeignKeyExhaustedError indicates a foreignKey generator's column is
+// unique-constrained (e.g. it's also the table's primary key) but the
+// referenced table doesn't have enough distinct rows to supply that many
+// unique values — a 1:1 relationship that can't be seeded past the smaller
+// side's row count.
+type UniqueForeignKeyExhaustedError struct {
+	Column    string
+	Table     string
+	RefColumn string
+	Available int
+	Requested int
+}
+
+func (e *UniqueForeignKeyExhaustedError) Error() string {
+	return fmt.Sprintf(
+		"column %q: foreign key to %s.%s must be unique, but %s only has %d row(s) — cannot generate %d unique values",
+		e.Column, e.Table, e.RefColumn, e.Table, e.Available, e.Requested,
+	)
 }
 
 // RowGenerator generates rows one at a time for a fixed set of column specs,
@@ -61,32 +87,62 @@ type enumSequenceState struct {
 
 // NewRowGenerator prepares a generator for the given column specs: it samples
 // FK pools up front (once per referenced table+column) and returns
-// *EmptyReferenceError if any FK-backed column's referenced table has zero rows.
-func NewRowGenerator(sqlDB *sql.DB, schema *db.TableSchema, columns map[string]ColumnSpec) (*RowGenerator, error) {
+// *EmptyReferenceError if any FK-backed column's referenced table has zero
+// rows, or *UniqueForeignKeyExhaustedError if a unique-constrained FK column
+// (e.g. a PK that's also a foreignKey) doesn't have enough distinct
+// referenced rows to supply `count` unique values. count is the number of
+// rows the caller intends to generate with this generator; pass 0 if unknown
+// (e.g. a caller that only wants to peek at a handful of rows without a
+// unique-FK guarantee).
+func NewRowGenerator(sqlDB *sql.DB, schema *db.TableSchema, columns map[string]ColumnSpec, count int) (*RowGenerator, error) {
 	colAffinity := make(map[string]string, len(schema.Columns))
 	for _, c := range schema.Columns {
 		colAffinity[c.Name] = Affinity(c.Type)
 	}
 
+	uniqueGroups := computeUniqueGroups(schema)
+	isSoloUnique := func(colName string) bool {
+		group, ok := uniqueGroups[colName]
+		return ok && len(group) == 1 && group[0] == colName
+	}
+
 	fkPools := make(map[string]*fkPool)
-	for _, spec := range columns {
+	for colName, spec := range columns {
 		if spec.Generator != ForeignKeyGeneratorName {
 			continue
 		}
 		table, _ := spec.Options["table"].(string)
 		column, _ := spec.Options["column"].(string)
 		key := table + "\x00" + column
-		if _, ok := fkPools[key]; ok {
-			continue
+		pool, ok := fkPools[key]
+		if !ok {
+			var err error
+			pool, err = sampleForeignKeyPool(sqlDB, table, column)
+			if err != nil {
+				return nil, err
+			}
+			if len(pool.values) == 0 {
+				return nil, &EmptyReferenceError{Table: table}
+			}
+			fkPools[key] = pool
 		}
-		pool, err := sampleForeignKeyPool(sqlDB, table, column)
-		if err != nil {
-			return nil, err
+		wantUnique := isSoloUnique(colName)
+		if v, ok := spec.Options["unique"].(bool); ok {
+			// Explicit user override (surfaced as a UI toggle): sample without
+			// replacement even if the column isn't itself unique-constrained,
+			// or allow replacement (and the collision risk that comes with
+			// it) even for a column that is, if the user's opted into that.
+			wantUnique = v
 		}
-		if len(pool.values) == 0 {
-			return nil, &EmptyReferenceError{Table: table}
+		if wantUnique {
+			pool.unique = true
+			if count > len(pool.values) {
+				return nil, &UniqueForeignKeyExhaustedError{
+					Column: colName, Table: table, RefColumn: column,
+					Available: len(pool.values), Requested: count,
+				}
+			}
 		}
-		fkPools[key] = pool
 	}
 
 	enumPools := make(map[string]*fkPool)
@@ -110,7 +166,6 @@ func NewRowGenerator(sqlDB *sql.DB, schema *db.TableSchema, columns map[string]C
 		enumPools[key] = pool
 	}
 
-	uniqueGroups := computeUniqueGroups(schema)
 	var relevantGroups [][]string
 	seenGroupKey := map[string]bool{}
 	for colName := range columns {
@@ -189,6 +244,17 @@ func (g *RowGenerator) generateValue(colName string, spec ColumnSpec, rowSoFar m
 		table, _ := spec.Options["table"].(string)
 		column, _ := spec.Options["column"].(string)
 		pool := g.fkPools[table+"\x00"+column]
+		if pool.unique {
+			if pool.pos >= len(pool.values) {
+				return nil, &UniqueForeignKeyExhaustedError{
+					Column: colName, Table: table, RefColumn: column,
+					Available: len(pool.values), Requested: pool.pos + 1,
+				}
+			}
+			v := pool.values[pool.pos]
+			pool.pos++
+			return v, nil
+		}
 		return pool.values[rand.Intn(len(pool.values))], nil
 	}
 	if spec.Generator == "enumFromColumn" {
@@ -351,7 +417,7 @@ func tupleKeyFor(row map[string]any, group []string) string {
 // GenerateRows generates `count` rows of fake data for the given column specs,
 // without touching the target table. Used by the dry-run preview path.
 func GenerateRows(sqlDB *sql.DB, schema *db.TableSchema, columns map[string]ColumnSpec, count int) ([]map[string]any, error) {
-	gen, err := NewRowGenerator(sqlDB, schema, columns)
+	gen, err := NewRowGenerator(sqlDB, schema, columns, count)
 	if err != nil {
 		return nil, err
 	}

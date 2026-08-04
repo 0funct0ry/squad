@@ -503,6 +503,11 @@ export default function App() {
   const [seedCount, setSeedCount] = useState<number>(1000);
   const [seedPreviewRows, setSeedPreviewRows] = useState<Record<string, any>[] | null>(null);
   const [seedPreviewLoading, setSeedPreviewLoading] = useState<boolean>(false);
+  // Tracks the table whose plan/selections/overrides are currently loaded, so
+  // re-entering the Seed tab for the same table (e.g. after a trip to the
+  // Schema tab) preserves in-progress config instead of refetching and
+  // resetting it. Only a genuine table change clears this.
+  const seedPlanLoadedForRef = useRef<string | null>(null);
   const [seedInsertLoading, setSeedInsertLoading] = useState<boolean>(false);
   const [seedError, setSeedError] = useState<string | null>(null);
 
@@ -1064,7 +1069,8 @@ export default function App() {
       setAddColType('TEXT');
       setAddColNotNull(false);
       setAddColDefault('');
-      
+      seedPlanLoadedForRef.current = null;
+
       // Reload schema
       const res = await apiFetch(`/tables/${selectedTable.name}/schema`);
       const body = await res.json();
@@ -1090,7 +1096,8 @@ export default function App() {
         delete copy[fromCol];
         return copy;
       });
-      
+      seedPlanLoadedForRef.current = null;
+
       // Reload schema
       const res = await apiFetch(`/tables/${selectedTable.name}/schema`);
       const body = await res.json();
@@ -1117,6 +1124,7 @@ export default function App() {
       } else {
         showToast(`Column "${colName}" dropped successfully!`, 'success', 5000);
       }
+      seedPlanLoadedForRef.current = null;
 
       // Reload schema
       const res = await apiFetch(`/tables/${selectedTable.name}/schema`);
@@ -1137,6 +1145,7 @@ export default function App() {
       });
       showToast('Foreign key added successfully!', 'success');
       setAddFk(emptyFkDraft());
+      seedPlanLoadedForRef.current = null;
 
       // Reload schema
       const res = await apiFetch(`/tables/${selectedTable.name}/schema`);
@@ -1174,6 +1183,7 @@ export default function App() {
         foreignKey: { id: fk.id }
       });
       showToast('Foreign key dropped successfully!', 'success');
+      seedPlanLoadedForRef.current = null;
 
       const res = await apiFetch(`/tables/${selectedTable.name}/schema`);
       const body = await res.json();
@@ -1650,6 +1660,9 @@ export default function App() {
   // Load the seed plan when entering the Seed tab (or switching tables while on it)
   useEffect(() => {
     if (activeTab !== 'seed' || !selectedTable) return;
+
+    if (seedPlanLoadedForRef.current === selectedTable.name) return;
+    seedPlanLoadedForRef.current = selectedTable.name;
 
     setSeedPlan(null);
     setSeedPlanError(null);

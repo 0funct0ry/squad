@@ -70,7 +70,7 @@ func (s *State) cmdSeed(args []string) {
 		return
 	}
 
-	gen, err := seed.NewRowGenerator(s.DB, schema, specs)
+	gen, err := seed.NewRowGenerator(s.DB, schema, specs, n)
 	if err != nil {
 		s.shellError(err)
 		return

@@ -28,7 +28,7 @@ func TestEnumFromColumn_OnlyProducesRealDistinctValues(t *testing.T) {
 	specs := map[string]ColumnSpec{
 		"status": {Generator: "enumFromColumn", Options: map[string]any{"table": "posts", "column": "status"}},
 	}
-	gen, err := NewRowGenerator(sqlDB, schema, specs)
+	gen, err := NewRowGenerator(sqlDB, schema, specs, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestEnumFromColumn_ErrorsOnMissingTableOrColumn(t *testing.T) {
 	specs := map[string]ColumnSpec{
 		"status": {Generator: "enumFromColumn", Options: map[string]any{"table": "does_not_exist", "column": "status"}},
 	}
-	if _, err := NewRowGenerator(sqlDB, schema, specs); err == nil {
+	if _, err := NewRowGenerator(sqlDB, schema, specs, 0); err == nil {
 		t.Error("expected an error for a nonexistent table")
 	}
 }
@@ -85,7 +85,7 @@ func TestEnumFromColumn_ErrorsWhenColumnIsAllNull(t *testing.T) {
 	specs := map[string]ColumnSpec{
 		"val": {Generator: "enumFromColumn", Options: map[string]any{"table": "t", "column": "val"}},
 	}
-	if _, err := NewRowGenerator(sqlDB, schema, specs); err == nil {
+	if _, err := NewRowGenerator(sqlDB, schema, specs, 0); err == nil {
 		t.Error("expected an EmptyReferenceError-shaped error when the referenced column is entirely NULL")
 	}
 }
@@ -105,7 +105,7 @@ func TestEnumFromColumn_PoolIsGenuinelyDeduplicated(t *testing.T) {
 	specs := map[string]ColumnSpec{
 		"category": {Generator: "enumFromColumn", Options: map[string]any{"table": "t", "column": "category"}},
 	}
-	gen, err := NewRowGenerator(sqlDB, schema, specs)
+	gen, err := NewRowGenerator(sqlDB, schema, specs, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

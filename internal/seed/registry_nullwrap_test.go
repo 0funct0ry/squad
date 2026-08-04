@@ -10,7 +10,7 @@ func TestNullWithProbability_NullRateApproximatelyMatchesConfigured(t *testing.T
 			"nullRate":  0.3,
 		}},
 	}
-	gen, err := NewRowGenerator(nil, schema, specs)
+	gen, err := NewRowGenerator(nil, schema, specs, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestNullWithProbability_CanWrapCrossColumnGenerator(t *testing.T) {
 			"nullRate": 0.0,
 		}},
 	}
-	gen, err := NewRowGenerator(nil, schema, specs)
+	gen, err := NewRowGenerator(nil, schema, specs, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

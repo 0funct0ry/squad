@@ -265,13 +265,21 @@ func (s *Server) handleSeedTable(c *gin.Context) {
 		return
 	}
 
-	gen, err := seed.NewRowGenerator(s.db, schema, specs)
+	gen, err := seed.NewRowGenerator(s.db, schema, specs, req.Count)
 	if err != nil {
 		var emptyRef *seed.EmptyReferenceError
 		if errors.As(err, &emptyRef) {
 			c.JSON(400, gin.H{
 				"ok":    false,
 				"error": gin.H{"code": "EMPTY_REFERENCE", "message": err.Error()},
+			})
+			return
+		}
+		var fkExhausted *seed.UniqueForeignKeyExhaustedError
+		if errors.As(err, &fkExhausted) {
+			c.JSON(400, gin.H{
+				"ok":    false,
+				"error": gin.H{"code": "UNIQUE_FK_EXHAUSTED", "message": err.Error()},
 			})
 			return
 		}

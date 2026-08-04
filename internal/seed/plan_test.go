@@ -183,6 +183,45 @@ func TestBuildPlan_SoloUniqueColumn(t *testing.T) {
 	}
 }
 
+func TestBuildPlan_CheckConstraintEnum(t *testing.T) {
+	database := openScratchDB(t)
+	if _, err := database.Exec(`CREATE TABLE drivers (
+		driver_id TEXT PRIMARY KEY,
+		background_check_status TEXT NOT NULL DEFAULT 'pending'
+			CHECK (background_check_status IN ('pending','approved','rejected')),
+		driver_rating_avg REAL DEFAULT 5.0 CHECK (driver_rating_avg BETWEEN 0 AND 5)
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := db.GetTableSchema(database, "drivers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plans, err := BuildPlan(database, schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	status := planFor(t, plans, "background_check_status")
+	if status.Generator == nil || *status.Generator != "oneOf" {
+		t.Fatalf("expected oneOf generator, got %v", status.Generator)
+	}
+	if status.Options["values"] != "pending, approved, rejected" {
+		t.Errorf("unexpected enum values: %+v", status.Options["values"])
+	}
+	if status.CheckClause == nil || *status.CheckClause == "" {
+		t.Errorf("expected checkClause to be populated")
+	}
+
+	rating := planFor(t, plans, "driver_rating_avg")
+	if rating.Generator == nil || *rating.Generator != "float" {
+		t.Fatalf("expected float generator, got %v", rating.Generator)
+	}
+	if rating.Options["min"] != 0.0 || rating.Options["max"] != 5.0 {
+		t.Errorf("unexpected range options: %+v", rating.Options)
+	}
+}
+
 func TestNameHeuristic_M6aNewRules(t *testing.T) {
 	cases := []struct {
 		colName string

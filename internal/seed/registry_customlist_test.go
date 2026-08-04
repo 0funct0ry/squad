@@ -111,7 +111,7 @@ func TestIncrementalEnum_CyclesDeterministicallyAndWraps(t *testing.T) {
 	specs := map[string]ColumnSpec{
 		"day": {Generator: "incrementalEnum", Options: map[string]any{"values": "Mon,Tue,Wed"}},
 	}
-	gen, err := NewRowGenerator(nil, schema, specs)
+	gen, err := NewRowGenerator(nil, schema, specs, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestIncrementalEnum_RespectsStartAndStep(t *testing.T) {
 	specs := map[string]ColumnSpec{
 		"day": {Generator: "incrementalEnum", Options: map[string]any{"values": "A,B,C,D", "start": 1, "step": 2}},
 	}
-	gen, err := NewRowGenerator(nil, schema, specs)
+	gen, err := NewRowGenerator(nil, schema, specs, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2,6 +2,8 @@ package seed
 
 import (
 	"database/sql"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/0funct0ry/squad/internal/db"
@@ -17,6 +19,9 @@ type ColumnPlan struct {
 	Generator   *string        `json:"generator"`
 	Options     map[string]any `json:"options"`
 	UniqueGroup []string       `json:"uniqueGroup,omitempty"`
+	// CheckClause is the raw `CHECK (...)` clause text for this column, if any
+	// was found in the table's DDL, surfaced for display in the seed UI.
+	CheckClause *string `json:"checkClause,omitempty"`
 }
 
 // Affinity classifies a SQLite declared column type into one of the five
@@ -69,7 +74,27 @@ func BuildPlan(sqlDB *sql.DB, schema *db.TableSchema) ([]ColumnPlan, error) {
 			}
 			gen := ForeignKeyGeneratorName
 			plan.Generator = &gen
-			plan.Options = map[string]any{"table": fk.Table, "column": refColumn}
+			// Default to sampling without replacement when this FK column is
+			// itself unique-constrained (e.g. a PK that's also a foreignKey,
+			// a genuine 1:1 relationship) — otherwise random-with-replacement
+			// draws would eventually collide against the real constraint.
+			// The user can still override this in the UI.
+			isSoloUnique := len(plan.UniqueGroup) == 1 && plan.UniqueGroup[0] == col.Name
+			plan.Options = map[string]any{"table": fk.Table, "column": refColumn, "unique": isSoloUnique}
+			plans = append(plans, plan)
+			continue
+		}
+
+		check := findCheckConstraint(schema.DDL, col.Name)
+		if check.raw != "" {
+			clause := check.raw
+			plan.CheckClause = &clause
+		}
+
+		if len(check.enumValues) > 0 {
+			gen := "oneOf"
+			plan.Generator = &gen
+			plan.Options = map[string]any{"values": strings.Join(check.enumValues, ", ")}
 			plans = append(plans, plan)
 			continue
 		}
@@ -77,6 +102,10 @@ func BuildPlan(sqlDB *sql.DB, schema *db.TableSchema) ([]ColumnPlan, error) {
 		gen, opts := nameHeuristic(col)
 		if gen == "" {
 			gen, opts = typeFallback(col)
+		}
+		if check.hasRange && (gen == "int" || gen == "float") {
+			opts["min"] = check.rangeMin
+			opts["max"] = check.rangeMax
 		}
 		plan.Generator = &gen
 		plan.Options = opts
@@ -273,6 +302,64 @@ func hasWholeToken(lower, tok string) bool {
 		}
 	}
 	return false
+}
+
+type checkConstraint struct {
+	raw        string
+	enumValues []string
+	hasRange   bool
+	rangeMin   float64
+	rangeMax   float64
+}
+
+var (
+	checkInRe      = regexp.MustCompile(`(?is)CHECK\s*\(\s*([A-Za-z0-9_"'\x60\[\]]+)\s+IN\s*\(([^)]*)\)\s*\)`)
+	checkBetweenRe = regexp.MustCompile(`(?is)CHECK\s*\(\s*([A-Za-z0-9_"'\x60\[\]]+)\s+BETWEEN\s+(-?[\d.]+)\s+AND\s+(-?[\d.]+)\s*\)`)
+)
+
+// findCheckConstraint scans a table's DDL for a `CHECK (col IN (...))` or
+// `CHECK (col BETWEEN x AND y)` clause naming colName, and extracts the enum
+// values or numeric range. Returns a zero-value checkConstraint if the DDL has
+// no such constraint, or none naming this column, or a shape it doesn't
+// recognize (e.g. multi-column or compound CHECK expressions) — those are
+// simply left for nameHeuristic/typeFallback to handle as before.
+func findCheckConstraint(ddl string, colName string) checkConstraint {
+	if ddl == "" {
+		return checkConstraint{}
+	}
+	stripIdent := func(s string) string {
+		s = strings.TrimSpace(s)
+		return strings.Trim(s, `"'`+"`[]")
+	}
+
+	for _, m := range checkInRe.FindAllStringSubmatch(ddl, -1) {
+		if !strings.EqualFold(stripIdent(m[1]), colName) {
+			continue
+		}
+		var values []string
+		for _, v := range strings.Split(m[2], ",") {
+			v = stripIdent(v)
+			if v != "" {
+				values = append(values, v)
+			}
+		}
+		if len(values) > 0 {
+			return checkConstraint{raw: strings.TrimSpace(m[0]), enumValues: values}
+		}
+	}
+
+	for _, m := range checkBetweenRe.FindAllStringSubmatch(ddl, -1) {
+		if !strings.EqualFold(stripIdent(m[1]), colName) {
+			continue
+		}
+		min, errMin := strconv.ParseFloat(m[2], 64)
+		max, errMax := strconv.ParseFloat(m[3], 64)
+		if errMin == nil && errMax == nil {
+			return checkConstraint{raw: strings.TrimSpace(m[0]), hasRange: true, rangeMin: min, rangeMax: max}
+		}
+	}
+
+	return checkConstraint{}
 }
 
 func typeFallback(col db.ColumnInfo) (string, map[string]any) {

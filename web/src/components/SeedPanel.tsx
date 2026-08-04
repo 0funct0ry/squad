@@ -10,6 +10,7 @@ interface SeedColumnPlan {
   generator: string | null;
   options: Record<string, any> | null;
   uniqueGroup?: string[];
+  checkClause?: string | null;
 }
 
 interface SeedPlan {
@@ -134,6 +135,10 @@ export default function SeedPanel({
                   >
                     {col.name}
                   </div>
+                  <div className="text-[10.5px] text-slate-400 truncate">
+                    {col.type || 'BLOB'}
+                    {col.checkClause && <span className="ml-1 text-amber-500">· CHECK</span>}
+                  </div>
                   {!active && (
                     <div className="text-[10.5px] italic text-slate-400">skipped · {col.reason}</div>
                   )}
@@ -163,10 +168,18 @@ export default function SeedPanel({
           ) : (
             <>
               <div className="flex items-center justify-between gap-3 px-5 py-3.5 border-b border-slate-200 dark:border-slate-800 shrink-0">
-                <h3 className="font-mono font-semibold text-sm text-slate-900 dark:text-white">
-                  {selectedCol.name}
-                </h3>
-                <div className="flex items-center gap-2">
+                <div className="min-w-0">
+                  <h3 className="font-mono font-semibold text-sm text-slate-900 dark:text-white">
+                    {selectedCol.name}
+                    <span className="ml-2 font-normal text-xs text-slate-400">{selectedCol.type || 'BLOB'}</span>
+                  </h3>
+                  {selectedCol.checkClause && (
+                    <div className="font-mono text-[11px] text-amber-600 dark:text-amber-400 truncate mt-0.5">
+                      {selectedCol.checkClause}
+                    </div>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
                   {selectedCol.skip && (
                     <button
                       onClick={() => toggleSeedOverride(selectedCol)}
@@ -202,9 +215,30 @@ export default function SeedPanel({
                 )}
                 {selectedActive &&
                   (selectedSel?.generator === 'foreignKey' || selectedSel?.generator === 'enumFromColumn' ? (
-                    <span className="text-sm text-slate-400">
-                      {selectedSel.options?.table}.{selectedSel.options?.column}
-                    </span>
+                    <div className="flex flex-col gap-3">
+                      <span className="text-sm text-slate-400">
+                        {selectedSel.options?.table}.{selectedSel.options?.column}
+                      </span>
+                      {selectedSel?.generator === 'foreignKey' && (
+                        <label className="flex items-start gap-2 text-sm cursor-pointer max-w-md">
+                          <input
+                            type="checkbox"
+                            checked={!!selectedSel.options?.unique}
+                            disabled={!isWrite}
+                            onChange={(e) => updateSeedOption(selectedCol.name, 'unique', e.target.checked)}
+                            className="mt-0.5"
+                          />
+                          <span className="text-slate-600 dark:text-slate-300">
+                            Sample without replacement (each row gets a distinct value)
+                            <span className="block text-xs text-slate-400 mt-0.5">
+                              {selectedSel.options?.unique
+                                ? 'Fails fast if the row count exceeds the referenced table\'s row count, instead of risking a UNIQUE constraint error partway through.'
+                                : 'Values may repeat across rows — required if this column has its own UNIQUE/PK constraint and you\'re seeding more rows than the referenced table has.'}
+                            </span>
+                          </span>
+                        </label>
+                      )}
+                    </div>
                   ) : (
                     <GeneratorOptionsForm
                       schema={selectedMeta?.optionsSchema || []}

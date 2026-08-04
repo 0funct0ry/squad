@@ -168,7 +168,7 @@ func TestGeohash_CrossColumnDecodesBackNearReferencedLatLng(t *testing.T) {
 		"lng": {Generator: "float", Options: map[string]any{"min": -74.0, "max": -73.0}},
 		"geo": {Generator: "geohash", Options: map[string]any{"columns": []string{"lat", "lng"}, "precision": 9}},
 	}
-	gen, err := NewRowGenerator(nil, schema, specs)
+	gen, err := NewRowGenerator(nil, schema, specs, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

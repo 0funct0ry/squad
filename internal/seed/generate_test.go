@@ -20,7 +20,7 @@ func TestStatefulSequence_IncrementsAndResetsPerRequest(t *testing.T) {
 		"seq": {Generator: "sequence", Options: map[string]any{"start": 10, "step": 2}},
 	}
 
-	gen, err := NewRowGenerator(nil, schema, specs)
+	gen, err := NewRowGenerator(nil, schema, specs, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestStatefulSequence_IncrementsAndResetsPerRequest(t *testing.T) {
 	// semantics: dry-run and insert both construct their own generator, or in
 	// the case of seed_handler.go, the same generator is reused only within
 	// a single request/response cycle).
-	gen2, err := NewRowGenerator(nil, schema, specs)
+	gen2, err := NewRowGenerator(nil, schema, specs, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestStatefulRowNumber_DefaultsToOneAndFormats(t *testing.T) {
 	specs := map[string]ColumnSpec{
 		"rn": {Generator: "rowNumber", Options: map[string]any{"format": "ROW-%04d"}},
 	}
-	gen, err := NewRowGenerator(nil, schema, specs)
+	gen, err := NewRowGenerator(nil, schema, specs, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestStatefulCharacterSequence_Base26Labeling(t *testing.T) {
 	specs := map[string]ColumnSpec{
 		"cs": {Generator: "characterSequence", Options: map[string]any{}},
 	}
-	gen, err := NewRowGenerator(nil, schema, specs)
+	gen, err := NewRowGenerator(nil, schema, specs, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestStatefulCharacterSequence_Base26Labeling(t *testing.T) {
 	specs2 := map[string]ColumnSpec{
 		"cs": {Generator: "characterSequence", Options: map[string]any{"start": 25}},
 	}
-	gen2, err := NewRowGenerator(nil, schema2, specs2)
+	gen2, err := NewRowGenerator(nil, schema2, specs2, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestStatefulDigitSequence_ZeroPadded(t *testing.T) {
 	specs := map[string]ColumnSpec{
 		"ds": {Generator: "digitSequence", Options: map[string]any{"width": 4}},
 	}
-	gen, err := NewRowGenerator(nil, schema, specs)
+	gen, err := NewRowGenerator(nil, schema, specs, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func TestFormula_HappyPath(t *testing.T) {
 			"expression": "price * qty",
 		}},
 	}
-	gen, err := NewRowGenerator(nil, schema, specs)
+	gen, err := NewRowGenerator(nil, schema, specs, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
