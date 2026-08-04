@@ -33,6 +33,10 @@ func SplitStatements(sql string) ([]string, error) {
 	// the trigger). A semicolon must only end the outer statement when it
 	// isn't nested inside such a block, so track BEGIN/END as word-bounded
 	// keywords (case-insensitive) outside of quotes/comments/identifiers.
+	// CASE ... END expressions (e.g. inside an UPDATE's SET clause within a
+	// trigger body) also close with a bare END, so CASE counts as an opener
+	// too -- otherwise its END would prematurely close the enclosing
+	// trigger's BEGIN block and split the trigger body mid-statement.
 	beginDepth := 0
 
 	runes := []rune(sql)
@@ -162,7 +166,7 @@ func SplitStatements(sql string) ([]string, error) {
 			continue
 		}
 
-		if matchKeyword(i, "BEGIN") {
+		if matchKeyword(i, "BEGIN") || matchKeyword(i, "CASE") {
 			beginDepth++
 		} else if matchKeyword(i, "END") {
 			if beginDepth > 0 {

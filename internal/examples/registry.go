@@ -3,10 +3,15 @@ package examples
 import (
 	"sort"
 
+	"github.com/0funct0ry/squad/internal/examples/airline"
 	"github.com/0funct0ry/squad/internal/examples/audio"
+	"github.com/0funct0ry/squad/internal/examples/ecommerce"
+	"github.com/0funct0ry/squad/internal/examples/hospital"
+	"github.com/0funct0ry/squad/internal/examples/library"
 	"github.com/0funct0ry/squad/internal/examples/media"
 	"github.com/0funct0ry/squad/internal/examples/network"
 	"github.com/0funct0ry/squad/internal/examples/stay"
+	"github.com/0funct0ry/squad/internal/examples/streaming"
 	"github.com/0funct0ry/squad/internal/examples/transit"
 	"github.com/0funct0ry/squad/internal/examples/video"
 )
@@ -50,6 +55,36 @@ var registry = []Example{
 		Name:        "Peer-to-Peer Lodging Marketplace",
 		Description: "Minimal peer-to-peer lodging marketplace schema",
 		Schema:      stay.Schema,
+	},
+	{
+		Slug:        "ecommerce",
+		Name:        "E-Commerce Platform",
+		Description: "Minimal E-Commerce platform schema",
+		Schema:      ecommerce.Schema,
+	},
+	{
+		Slug:        "hospital",
+		Name:        "Hospital/EHR System",
+		Description: "Minimal Hospital/Electronic Health Record system schema",
+		Schema:      hospital.Schema,
+	},
+	{
+		Slug:        "airline",
+		Name:        "Airline Reservation System",
+		Description: "Minimal Airline reservation system schema",
+		Schema:      airline.Schema,
+	},
+	{
+		Slug:        "streaming",
+		Name:        "Movie Streaming Platform",
+		Description: "Minimal Movie streaming platform schema",
+		Schema:      streaming.Schema,
+	},
+	{
+		Slug:        "library",
+		Name:        "Library Management System",
+		Description: "Minimal Library management system schema",
+		Schema:      library.Schema,
 	},
 }
 

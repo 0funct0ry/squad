@@ -179,3 +179,41 @@ CREATE TABLE products (id INTEGER PRIMARY KEY);`
 		t.Errorf("expected trailing CREATE TABLE to be its own statement, got: %q", got[2])
 	}
 }
+
+func TestSplitStatementsTriggerBodyWithCaseExpression(t *testing.T) {
+	// A CASE ... END expression inside a trigger body's UPDATE (e.g. a status
+	// derived from an aggregate) closes with a bare END, same keyword as the
+	// trigger's own BEGIN...END wrapper. The CASE's END must not be mistaken
+	// for the trigger's closing END, or the semicolon after it gets treated
+	// as ending the CREATE TRIGGER statement early.
+	sql := `CREATE TABLE invoices (id INTEGER PRIMARY KEY, status TEXT, total_amount REAL, amount_paid REAL);
+CREATE TABLE payments (id INTEGER PRIMARY KEY, invoice_id INTEGER, amount REAL);
+CREATE TRIGGER trg_payment_updates_invoice
+AFTER INSERT ON payments
+FOR EACH ROW
+BEGIN
+    UPDATE invoices
+    SET amount_paid = (SELECT COALESCE(SUM(amount), 0) FROM payments WHERE invoice_id = NEW.invoice_id),
+        status = CASE
+            WHEN (SELECT COALESCE(SUM(amount), 0) FROM payments WHERE invoice_id = NEW.invoice_id) >= total_amount
+                THEN 'paid'
+            ELSE status
+        END
+    WHERE invoice_id = NEW.invoice_id;
+END;
+CREATE TABLE products (id INTEGER PRIMARY KEY);`
+
+	got, err := SplitStatements(sql)
+	if err != nil {
+		t.Fatalf("SplitStatements error: %v", err)
+	}
+	if len(got) != 4 {
+		t.Fatalf("expected 4 statements, got %d: %q", len(got), got)
+	}
+	if !strings.Contains(got[2], "CASE") || !strings.Contains(got[2], "WHERE invoice_id = NEW.invoice_id;\nEND") {
+		t.Errorf("expected trigger statement's CASE...END and trailing UPDATE/END to stay in one statement, got: %q", got[2])
+	}
+	if strings.TrimSpace(got[3]) != "CREATE TABLE products (id INTEGER PRIMARY KEY)" {
+		t.Errorf("expected trailing CREATE TABLE to be its own statement, got: %q", got[3])
+	}
+}
