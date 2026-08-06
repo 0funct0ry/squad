@@ -699,7 +699,7 @@ export default function App() {
     }
   };
 
-  const handleSandboxCreate = async (name: string): Promise<boolean> => {
+  const handleSandboxCreate = async (name: string, switchTo: boolean = true): Promise<boolean> => {
     try {
       const res = await fetch('/api/sandbox/dbs/new', {
         method: 'POST',
@@ -711,7 +711,7 @@ export default function App() {
         throw new Error(body.error?.message || 'Failed to create database');
       }
       refreshSandboxDbs();
-      switchActiveDb(body.data.id);
+      if (switchTo) switchActiveDb(body.data.id);
       return true;
     } catch (err: any) {
       throw new Error(err.message || 'Failed to create database');
@@ -1241,8 +1241,23 @@ export default function App() {
     return 'float';
   };
 
+  // seedOverrides holds an explicit "force skip" flag per column, keyed by
+  // name, which — when present — wins over the plan's own default skip
+  // value. Absent means "use the plan's default". This lets a user both
+  // pull in an auto-skipped column (e.g. an autoincrement PK) AND exclude a
+  // normally-seeded column (e.g. a self-referencing FK with no rows to
+  // reference yet, which should just default to NULL by being omitted from
+  // the insert).
+  const isColumnActive = (col: SeedColumnPlan): boolean => {
+    const effectiveSkip = col.name in seedOverrides ? seedOverrides[col.name] : col.skip;
+    return !effectiveSkip;
+  };
+
   const toggleSeedOverride = (col: SeedColumnPlan) => {
-    setSeedOverrides((prev) => ({ ...prev, [col.name]: !prev[col.name] }));
+    setSeedOverrides((prev) => {
+      const effectiveSkip = col.name in prev ? prev[col.name] : col.skip;
+      return { ...prev, [col.name]: !effectiveSkip };
+    });
     setSeedSelections((prev) => {
       if (prev[col.name]) return prev;
       return {
@@ -1253,7 +1268,17 @@ export default function App() {
   };
 
   const updateSeedGenerator = (colName: string, generator: string) => {
-    setSeedSelections((prev) => ({ ...prev, [colName]: { generator, options: {} } }));
+    // foreignKey/oneOf options (table/column, or CHECK-derived values) are
+    // detected by the backend's BuildPlan from schema introspection, not
+    // user input — there's no UI to fill them in, so when (re)selecting one
+    // of these generators, restore the plan's original detected options
+    // instead of wiping them to {} (which would make the column un-seedable).
+    const planCol = seedPlan?.columns.find((c) => c.name === colName);
+    const options =
+      (generator === 'foreignKey' || generator === 'oneOf') && planCol?.generator === generator
+        ? planCol.options || {}
+        : {};
+    setSeedSelections((prev) => ({ ...prev, [colName]: { generator, options } }));
     setRecentlyUsedGenerators((prev) => [generator, ...prev.filter((g) => g !== generator)].slice(0, 8));
   };
 
@@ -1268,8 +1293,7 @@ export default function App() {
     const payload: Record<string, { generator: string; options?: Record<string, any> }> = {};
     if (!seedPlan) return payload;
     seedPlan.columns.forEach((col) => {
-      const included = !col.skip || seedOverrides[col.name];
-      if (!included) return;
+      if (!isColumnActive(col)) return;
       const sel = seedSelections[col.name];
       if (!sel || !sel.generator) return;
       payload[col.name] = { generator: sel.generator, options: sel.options };
@@ -1963,7 +1987,7 @@ export default function App() {
         onDelete={handleSandboxDelete}
         onDownload={handleSandboxDownload}
         onUpload={handleSandboxUpload}
-        onCreate={handleSandboxCreate}
+        onCreate={(name: string) => handleSandboxCreate(name, false)}
         onError={showSandboxError}
         theme={theme}
         resolvedDark={resolvedDark}
@@ -2171,7 +2195,7 @@ export default function App() {
               onUpload={handleSandboxUpload}
               onCreate={handleSandboxCreate}
               onError={showSandboxError}
-              onOpenManage={() => setSandboxManageOpen(true)}
+              onOpenManage={() => { refreshSandboxDbs(); setSandboxManageOpen(true); }}
             />
           )}
         </div>
@@ -3495,6 +3519,7 @@ export default function App() {
                   seedInsertLoading={seedInsertLoading}
                   seedError={seedError}
                   recentlyUsedGenerators={recentlyUsedGenerators}
+                  isColumnActive={isColumnActive}
                   toggleSeedOverride={toggleSeedOverride}
                   updateSeedGenerator={updateSeedGenerator}
                   updateSeedOption={updateSeedOption}

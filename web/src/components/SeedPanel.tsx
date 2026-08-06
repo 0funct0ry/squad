@@ -39,6 +39,7 @@ interface SeedPanelProps {
   seedInsertLoading: boolean;
   seedError: string | null;
   recentlyUsedGenerators: string[];
+  isColumnActive: (col: SeedColumnPlan) => boolean;
   toggleSeedOverride: (col: SeedColumnPlan) => void;
   updateSeedGenerator: (colName: string, generator: string) => void;
   updateSeedOption: (colName: string, key: string, value: any) => void;
@@ -64,6 +65,7 @@ export default function SeedPanel({
   seedInsertLoading,
   seedError,
   recentlyUsedGenerators,
+  isColumnActive,
   toggleSeedOverride,
   updateSeedGenerator,
   updateSeedOption,
@@ -87,7 +89,7 @@ export default function SeedPanel({
     }
     setSelectedColumn((prev) => {
       if (prev && seedPlan.columns.some((c) => c.name === prev)) return prev;
-      const firstActive = seedPlan.columns.find((c) => !c.skip || seedOverrides[c.name]);
+      const firstActive = seedPlan.columns.find((c) => isColumnActive(c));
       return firstActive ? firstActive.name : seedPlan.columns[0]?.name ?? null;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -98,8 +100,8 @@ export default function SeedPanel({
   if (!seedPlan) return null;
 
   const selectedCol = seedPlan.columns.find((c) => c.name === selectedColumn) || null;
-  const selectedOverridden = selectedCol ? !!seedOverrides[selectedCol.name] : false;
-  const selectedActive = selectedCol ? (!selectedCol.skip || selectedOverridden) : false;
+  const selectedOverridden = selectedCol ? selectedCol.name in seedOverrides : false;
+  const selectedActive = selectedCol ? isColumnActive(selectedCol) : false;
   const selectedSel = selectedColumn ? seedSelections[selectedColumn] : undefined;
   const selectedMeta = selectedSel ? generatorMetaByName(selectedSel.generator) : undefined;
 
@@ -112,8 +114,7 @@ export default function SeedPanel({
             {seedPlan.columns.length} columns
           </div>
           {seedPlan.columns.map((col) => {
-            const overridden = !!seedOverrides[col.name];
-            const active = !col.skip || overridden;
+            const active = isColumnActive(col);
             const sel = seedSelections[col.name];
             const isSelected = col.name === selectedColumn;
             return (
@@ -140,7 +141,9 @@ export default function SeedPanel({
                     {col.checkClause && <span className="ml-1 text-amber-500">· CHECK</span>}
                   </div>
                   {!active && (
-                    <div className="text-[10.5px] italic text-slate-400">skipped · {col.reason}</div>
+                    <div className="text-[10.5px] italic text-slate-400">
+                      skipped · {col.reason || 'excluded from seed'}
+                    </div>
                   )}
                 </div>
                 {active && sel?.generator && (
@@ -180,14 +183,16 @@ export default function SeedPanel({
                   )}
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  {selectedCol.skip && (
-                    <button
-                      onClick={() => toggleSeedOverride(selectedCol)}
-                      className="text-xs underline text-slate-400 hover:text-indigo-500 cursor-pointer"
-                    >
-                      {selectedOverridden ? 'Skip again' : 'Override'}
-                    </button>
-                  )}
+                  <button
+                    onClick={() => toggleSeedOverride(selectedCol)}
+                    className="text-xs underline text-slate-400 hover:text-indigo-500 cursor-pointer"
+                  >
+                    {selectedActive
+                      ? 'Exclude from seed'
+                      : selectedCol.skip && !selectedOverridden
+                        ? 'Override'
+                        : 'Include'}
+                  </button>
                   {selectedActive && (
                     <button
                       type="button"
@@ -210,7 +215,9 @@ export default function SeedPanel({
               <div className="flex-1 min-h-0 overflow-y-auto p-5 flex flex-col gap-4">
                 {!selectedActive && (
                   <p className="text-sm text-slate-400 italic">
-                    This column is skipped — {selectedCol.reason}. Click Override to configure it anyway.
+                    {selectedCol.reason
+                      ? `This column is skipped — ${selectedCol.reason}. Click Override to configure it anyway.`
+                      : "This column is excluded from seeding — it'll be omitted from the insert and fall back to its column default (NULL, unless the schema specifies otherwise). Click Include to configure it."}
                   </p>
                 )}
                 {selectedActive &&

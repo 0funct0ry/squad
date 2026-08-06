@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,13 @@ import (
 	"sync"
 	"time"
 )
+
+// namesManifestFile is the sidecar JSON file, kept alongside the sandbox
+// directory's *.db files, that persists id -> display name mappings across
+// process restarts. Registry.entries is otherwise purely in-memory, so
+// without this file every restart against a persistent --dir would lose all
+// display names and fall back to the raw hex id.
+const namesManifestFile = ".squad-sandbox-names.json"
 
 // sqliteHeaderMagic is the fixed 16-byte header every well-formed SQLite
 // database file begins with.
@@ -61,6 +69,44 @@ func (r *Registry) Dir() string {
 // MaxUploadBytes returns the configured max upload size in bytes.
 func (r *Registry) MaxUploadBytes() int64 {
 	return r.maxUploadMB
+}
+
+func (r *Registry) namesManifestPath() string {
+	return filepath.Join(r.dir, namesManifestFile)
+}
+
+// loadNames reads the id -> displayName sidecar manifest, if present.
+// A missing or unreadable/corrupt manifest is treated as "no names known"
+// rather than an error, since it's advisory: callers fall back to the id.
+func (r *Registry) loadNames() map[string]string {
+	names := make(map[string]string)
+	data, err := os.ReadFile(r.namesManifestPath())
+	if err != nil {
+		return names
+	}
+	_ = json.Unmarshal(data, &names)
+	return names
+}
+
+// persistNames writes the current id -> displayName mapping for all
+// registered entries to the sidecar manifest. Caller must not hold r.mu.
+func (r *Registry) persistNames() {
+	r.mu.RLock()
+	names := make(map[string]string, len(r.entries))
+	for id, e := range r.entries {
+		names[id] = e.DisplayName
+	}
+	r.mu.RUnlock()
+
+	data, err := json.MarshalIndent(names, "", "  ")
+	if err != nil {
+		return
+	}
+	tmp := r.namesManifestPath() + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, r.namesManifestPath())
 }
 
 func newID() (string, error) {
@@ -200,6 +246,7 @@ func (r *Registry) registerOpened(id, path, displayName string) (*RegistryEntry,
 	r.entries[id] = entry
 	r.mu.Unlock()
 
+	r.persistNames()
 	return entry, nil
 }
 
@@ -267,12 +314,15 @@ func (r *Registry) List() []RegistryEntry {
 // filename or path.
 func (r *Registry) Rename(id, newDisplayName string) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	entry, ok := r.entries[id]
 	if !ok {
+		r.mu.Unlock()
 		return fmt.Errorf("sandbox db %q not found", id)
 	}
 	entry.DisplayName = newDisplayName
+	r.mu.Unlock()
+
+	r.persistNames()
 	return nil
 }
 
@@ -301,6 +351,7 @@ func (r *Registry) Remove(id string) error {
 	if err := os.Remove(entry.Path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to remove sandbox db file: %w", err)
 	}
+	r.persistNames()
 	return nil
 }
 
@@ -313,6 +364,8 @@ func (r *Registry) Rescan() []error {
 	if err != nil {
 		return []error{fmt.Errorf("failed to read sandbox dir: %w", err)}
 	}
+
+	names := r.loadNames()
 
 	var errs []error
 	for _, e := range entries {
@@ -368,11 +421,16 @@ func (r *Registry) Rescan() []error {
 			size = info.Size()
 		}
 
+		displayName := id
+		if known, ok := names[id]; ok && known != "" {
+			displayName = known
+		}
+
 		r.mu.Lock()
 		r.entries[id] = &RegistryEntry{
 			ID:             id,
 			Path:           path,
-			DisplayName:    id,
+			DisplayName:    displayName,
 			DB:             database,
 			OpenedAt:       now,
 			CreatedAt:      createdAt,
