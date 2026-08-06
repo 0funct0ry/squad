@@ -24,14 +24,30 @@ func TestExampleSchemas(t *testing.T) {
 			if err != nil {
 				t.Fatalf("splitting schema statements: %v", err)
 			}
+
+			// Mirror the /api/query runtime path (see server.handleQuery):
+			// multi-statement batches run inside a single sql.Tx via tx.Exec,
+			// not via independent sqldb.Exec calls. A schema containing its
+			// own explicit BEGIN/COMMIT fails here with "cannot start a
+			// transaction within a transaction", exactly as in production.
+			tx, err := sqldb.Begin()
+			if err != nil {
+				t.Fatalf("begin tx: %v", err)
+			}
+			defer tx.Rollback()
+
 			for _, stmt := range stmts {
 				stmt = strings.TrimSpace(stmt)
 				if stmt == "" {
 					continue
 				}
-				if _, err := sqldb.Exec(stmt); err != nil {
+				if _, err := tx.Exec(stmt); err != nil {
 					t.Fatalf("executing statement failed: %v\nstatement:\n%s", err, stmt)
 				}
+			}
+
+			if err := tx.Commit(); err != nil {
+				t.Fatalf("commit tx: %v", err)
 			}
 
 			upper := strings.ToUpper(ex.Schema)

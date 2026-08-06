@@ -1,7 +1,6 @@
 package audio
 
-const Schema = `
--- Minimal audio streaming service schema
+const Schema = `-- Minimal audio streaming service schema
 
 PRAGMA foreign_keys = ON;
 

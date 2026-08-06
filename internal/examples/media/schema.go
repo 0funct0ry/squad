@@ -1,7 +1,6 @@
 package media
 
-const Schema = `
--- Minimal visual social network schema
+const Schema = `-- Minimal visual social network schema
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE users (

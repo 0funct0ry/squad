@@ -1,7 +1,6 @@
 package video
 
-const Schema = `
--- Minimal video sharing schema
+const Schema = `-- Minimal video sharing schema
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE users (

@@ -644,6 +644,11 @@ export default function App() {
   };
 
   const switchActiveDb = (id: string) => {
+    if (id === activeDbId) {
+      setSandboxManageOpen(false);
+      return;
+    }
+
     fetch('/api/sandbox/dbs/active', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -666,6 +671,8 @@ export default function App() {
     setRowsData(null);
     setQueryResult(null);
     setQueryError(null);
+    setSqlValue('SELECT * FROM sqlite_master LIMIT 10;');
+    setQueryHistory([]);
     setTables([]);
     setMeta(null);
     setAllSchemas({});

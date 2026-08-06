@@ -1,7 +1,6 @@
 package transit
 
-const Schema = `
--- Ride-hailing service schema
+const Schema = `-- Ride-hailing service schema
 
 PRAGMA foreign_keys = ON;
 

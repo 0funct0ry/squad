@@ -1,7 +1,6 @@
 package stay
 
-const Schema = `
--- Minimal peer-to-peer lodging marketplace schema
+const Schema = `-- Minimal peer-to-peer lodging marketplace schema
 
 PRAGMA foreign_keys = ON;
 

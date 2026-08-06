@@ -5,14 +5,22 @@ import (
 
 	"github.com/0funct0ry/squad/internal/examples/airline"
 	"github.com/0funct0ry/squad/internal/examples/audio"
+	"github.com/0funct0ry/squad/internal/examples/chat"
+	"github.com/0funct0ry/squad/internal/examples/chess"
 	"github.com/0funct0ry/squad/internal/examples/ecommerce"
+	"github.com/0funct0ry/squad/internal/examples/elearning"
+	"github.com/0funct0ry/squad/internal/examples/food_delivery"
 	"github.com/0funct0ry/squad/internal/examples/hospital"
+	"github.com/0funct0ry/squad/internal/examples/inventory"
 	"github.com/0funct0ry/squad/internal/examples/library"
 	"github.com/0funct0ry/squad/internal/examples/media"
 	"github.com/0funct0ry/squad/internal/examples/network"
+	"github.com/0funct0ry/squad/internal/examples/social_graph"
 	"github.com/0funct0ry/squad/internal/examples/stay"
+	"github.com/0funct0ry/squad/internal/examples/stocks"
 	"github.com/0funct0ry/squad/internal/examples/streaming"
 	"github.com/0funct0ry/squad/internal/examples/transit"
+	"github.com/0funct0ry/squad/internal/examples/vcs"
 	"github.com/0funct0ry/squad/internal/examples/video"
 )
 
@@ -83,8 +91,56 @@ var registry = []Example{
 	{
 		Slug:        "library",
 		Name:        "Library Management System",
-		Description: "Minimal Library management system schema",
+		Description: "Minimal library management system schema",
 		Schema:      library.Schema,
+	},
+	{
+		Slug:        "stocks",
+		Name:        "Stock Trading Platform",
+		Description: "Minimal stock trading platform schema",
+		Schema:      stocks.Schema,
+	},
+	{
+		Slug:        "elearning",
+		Name:        "E-Learning Platform",
+		Description: "Minimal e-learning platform schema",
+		Schema:      elearning.Schema,
+	},
+	{
+		Slug:        "food-delivery",
+		Name:        "Restaurant/Food Delivery",
+		Description: "Minimal food delivery platform schema",
+		Schema:      food_delivery.Scheme,
+	},
+	{
+		Slug:        "inventory",
+		Name:        "Supply Chain/Inventory Management",
+		Description: "Minimal supply chain / inventory management system schema",
+		Schema:      inventory.Schema,
+	},
+	{
+		Slug:        "social-graph",
+		Name:        "Social Network Graph",
+		Description: "Minimal social network graph schema",
+		Schema:      social_graph.Schema,
+	},
+	{
+		Slug:        "chat",
+		Name:        "Chat platform",
+		Description: "Minimal chat platform schema",
+		Schema:      chat.Schema,
+	},
+	{
+		Slug:        "vcs",
+		Name:        "Version Control System",
+		Description: "Minimal version control system schema",
+		Schema:      vcs.Schema,
+	},
+	{
+		Slug:        "chess",
+		Name:        "Online Chess Platform",
+		Description: "Minimal online chess platform schema",
+		Schema:      chess.Schema,
 	},
 }
 

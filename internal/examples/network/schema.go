@@ -1,7 +1,6 @@
 package network
 
-const Schema = `
--- Minimal professional networking schema
+const Schema = `-- Minimal professional networking schema
 
 PRAGMA foreign_keys = ON;
 

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, Database, Pencil, Trash2, Download, Upload, Plus, Check, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, Database, Pencil, Trash2, Download, Upload, Plus, Check, X, Settings } from 'lucide-react';
 import ConfirmModal from './ConfirmModal';
 import UploadDbModal from './UploadDbModal';
 
@@ -225,6 +225,15 @@ export default function DbSwitcher({
               className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
             >
               <Upload className="w-3.5 h-3.5" /> Upload another database
+            </button>
+            <button
+              onClick={() => {
+                setOpen(false);
+                onOpenManage();
+              }}
+              className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+            >
+              <Settings className="w-3.5 h-3.5" /> Manage databases
             </button>
           </div>
         </div>
