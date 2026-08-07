@@ -1178,6 +1178,87 @@ func (s *Server) handleDropTable(c *gin.Context) {
 	})
 }
 
+// POST /api/tables/:name/duplicate
+//
+// Uses CREATE TABLE ... AS SELECT, which only copies columns and data — it
+// intentionally does not preserve the original's indexes, constraints, or
+// triggers (SQLite's CTAS semantics). This is a deliberate simplification
+// over extracting and rewriting the original DDL; the frontend's copy makes
+// the limitation explicit to the user.
+type DuplicateTableRequest struct {
+	NewName     string `json:"newName" binding:"required"`
+	IncludeData bool   `json:"includeData"`
+}
+
+func (s *Server) handleDuplicateTable(c *gin.Context) {
+	name := c.Param("name")
+
+	if _, err := db.GetTableSchema(s.db, name); err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"ok":    false,
+				"error": gin.H{"code": "NOT_FOUND", "message": "table or view not found"},
+			})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"ok":    false,
+			"error": gin.H{"code": "DB_ERROR", "message": err.Error()},
+		})
+		return
+	}
+
+	var req DuplicateTableRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"ok":    false,
+			"error": gin.H{"code": "BAD_REQUEST", "message": err.Error()},
+		})
+		return
+	}
+	if strings.TrimSpace(req.NewName) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"ok":    false,
+			"error": gin.H{"code": "BAD_REQUEST", "message": "newName is required"},
+		})
+		return
+	}
+
+	var exists bool
+	if err := s.db.QueryRow("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = ?)", req.NewName).Scan(&exists); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"ok":    false,
+			"error": gin.H{"code": "DB_ERROR", "message": err.Error()},
+		})
+		return
+	}
+	if exists {
+		c.JSON(http.StatusConflict, gin.H{
+			"ok":    false,
+			"error": gin.H{"code": "ALREADY_EXISTS", "message": fmt.Sprintf("table or view %q already exists", req.NewName)},
+		})
+		return
+	}
+
+	selectClause := fmt.Sprintf("SELECT * FROM %s", db.QuoteIdentifier(name))
+	if !req.IncludeData {
+		selectClause += " WHERE 0"
+	}
+	query := fmt.Sprintf("CREATE TABLE %s AS %s", db.QuoteIdentifier(req.NewName), selectClause)
+	if _, err := s.db.Exec(query); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"ok":    false,
+			"error": gin.H{"code": "SQL_ERROR", "message": err.Error()},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"ok":   true,
+		"data": gin.H{"name": req.NewName},
+	})
+}
+
 // POST /api/tables/:name/rows (insert row)
 type InsertRowRequest struct {
 	Values map[string]interface{} `json:"values" binding:"required"`

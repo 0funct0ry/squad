@@ -239,16 +239,32 @@ func isHookManagedTriggerName(name string) bool {
 	return strings.HasPrefix(name, hookTriggerPrefix)
 }
 
-// GetTables returns a list of tables and views with their row counts.
+// GetTables returns a list of tables and views with their row counts,
+// excluding SQLite's own internal sqlite_% tables (e.g. sqlite_sequence).
 func GetTables(db Queryer) ([]TableInfo, error) {
-	rows, err := db.Query(`
+	return getTables(db, false)
+}
+
+// GetTablesIncludingSystem is GetTables but also includes SQLite's internal
+// sqlite_%-prefixed tables — used by the sidebar's "Show system tables"
+// toggle, which is otherwise a no-op since GetTables filters them out.
+func GetTablesIncludingSystem(db Queryer) ([]TableInfo, error) {
+	return getTables(db, true)
+}
+
+func getTables(db Queryer, includeSystem bool) ([]TableInfo, error) {
+	systemFilter := "AND name NOT LIKE 'sqlite_%'"
+	if includeSystem {
+		systemFilter = ""
+	}
+	rows, err := db.Query(fmt.Sprintf(`
 		SELECT name, type, sql
 		FROM sqlite_master
 		WHERE type IN ('table', 'view')
-		  AND name NOT LIKE 'sqlite_%'
-		  AND name NOT LIKE '!_!_squad!_%' ESCAPE '!'
+		  %s
+		  AND name NOT LIKE '!_!_squad!_%%' ESCAPE '!'
 		ORDER BY name
-	`)
+	`, systemFilter))
 	if err != nil {
 		return nil, fmt.Errorf("failed to query tables: %w", err)
 	}

@@ -377,6 +377,59 @@ func (s *Server) handleTableExport(c *gin.Context) {
 	}
 }
 
+// GET /api/export/all
+//
+// Streams a single .sql snapshot of every table and view in the database
+// (schema + data), by running the same per-table ExportSQL path
+// handleTableExport uses, once per table in name order.
+func (s *Server) handleExportAll(c *gin.Context) {
+	c.Header("Content-Disposition", "attachment; filename=\"export-all.sql\"")
+	c.Header("Content-Type", "application/sql")
+
+	err := vtab.WithMounts(c.Request.Context(), s.db, s.mountStore, func(conn *sql.Conn) error {
+		q := db.WrapConn(conn)
+		tables, err := db.GetTables(q)
+		if err != nil {
+			return err
+		}
+
+		for _, t := range tables {
+			schema, err := db.GetTableSchema(q, t.Name)
+			if err != nil {
+				return err
+			}
+
+			selectQuery := fmt.Sprintf("SELECT * FROM %s", db.QuoteIdentifier(t.Name))
+			rows, err := conn.QueryContext(c.Request.Context(), selectQuery)
+			if err != nil {
+				return err
+			}
+
+			source, cols, err := makeRowSource(rows, schema)
+			if err != nil {
+				rows.Close()
+				return err
+			}
+			if err := export.ExportSQL(t.Name, cols, source, c.Writer, true, schema.DDL); err != nil {
+				rows.Close()
+				return err
+			}
+			rows.Close()
+		}
+		return nil
+	})
+	if err != nil {
+		if !c.Writer.Written() {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"ok":    false,
+				"error": gin.H{"code": "DB_ERROR", "message": err.Error()},
+			})
+			return
+		}
+		_ = c.Error(err)
+	}
+}
+
 // exportValidationError distinguishes a client-caused VALIDATION error
 // (invalid columns=) from any other DB/write error inside the WithMounts
 // closure above, so the outer handler can map it to 400 instead of 500.

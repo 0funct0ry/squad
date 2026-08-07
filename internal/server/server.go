@@ -306,6 +306,7 @@ func (s *Server) setupSingleDBRoutes(api *gin.RouterGroup) {
 	api.GET("/tables/:name/rows", s.handleTableRows)
 	api.POST("/query", s.handleQuery)
 	api.GET("/tables/:name/export", s.handleTableExport)
+	api.GET("/export/all", s.handleExportAll)
 	api.POST("/export/query", s.handleQueryExport)
 
 	// Write-mode DDL & table editor endpoints
@@ -313,6 +314,7 @@ func (s *Server) setupSingleDBRoutes(api *gin.RouterGroup) {
 	api.POST("/tables", s.WriteGateMiddleware("creating table"), s.handleCreateTable)
 	api.PATCH("/tables/:name", s.WriteGateMiddleware("altering table"), s.handleAlterTable)
 	api.DELETE("/tables/:name", s.WriteGateMiddleware("dropping table"), s.handleDropTable)
+	api.POST("/tables/:name/duplicate", s.WriteGateMiddleware("duplicating table"), s.handleDuplicateTable)
 	api.POST("/tables/:name/rows", s.WriteGateMiddleware("inserting row"), s.handleInsertRow)
 	api.PATCH("/tables/:name/rows", s.WriteGateMiddleware("updating row"), s.handleUpdateRow)
 	api.DELETE("/tables/:name/rows", s.WriteGateMiddleware("deleting row"), s.handleDeleteRow)
@@ -349,7 +351,13 @@ func (s *Server) handleMeta(c *gin.Context) {
 }
 
 func (s *Server) handleTables(c *gin.Context) {
-	tables, err := db.GetTables(s.db)
+	var tables []db.TableInfo
+	var err error
+	if c.Query("includeSystem") == "true" {
+		tables, err = db.GetTablesIncludingSystem(s.db)
+	} else {
+		tables, err = db.GetTables(s.db)
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"ok":    false,

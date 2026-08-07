@@ -44,6 +44,9 @@ import FunctionBrowserModal from './components/FunctionBrowserModal';
 import SqlEditorPanel from './components/SqlEditorPanel';
 import RowGrid from './components/RowGrid';
 import ImportModal from './components/ImportModal';
+import TableContextMenu, { type ContextMenuTableInfo } from './components/TableContextMenu';
+import SidebarSectionMenu, { type SidebarSortBy } from './components/SidebarSectionMenu';
+import ErDiagramModal from './components/ErDiagramModal';
 import XmlExportModal, { defaultXmlExportOptions, type XmlExportOptions } from './components/XmlExportModal';
 import { isCleanIdentifier } from './components/ExportFieldNamesModal';
 import { apiFetch, apiUrl, setApiBase } from './lib/api';
@@ -331,6 +334,20 @@ async function dropTable(name: string): Promise<any> {
   return body.data;
 }
 
+async function duplicateTable(name: string, newName: string, includeData: boolean): Promise<any> {
+  const res = await apiFetch(`/tables/${encodeURIComponent(name)}/duplicate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ newName, includeData }),
+  });
+  const body = await res.json();
+  if (!res.ok || !body.ok) {
+    const err = body.error || { code: 'HTTP_ERROR', message: `HTTP error ${res.status}` };
+    throw new Error(`${err.code}: ${err.message}`);
+  }
+  return body.data;
+}
+
 async function insertRow(name: string, values: any): Promise<any> {
   const res = await apiFetch(`/tables/${name}/rows`, {
     method: 'POST',
@@ -466,6 +483,14 @@ export default function App() {
   const [importModalOpen, setImportModalOpen] = useState<boolean>(false);
   const [dropIndexConfirmation, setDropIndexConfirmation] = useState<IndexInfo | null>(null);
   const [dropTriggerConfirmation, setDropTriggerConfirmation] = useState<TriggerInfo | null>(null);
+
+  // Sidebar context-menu / kebab-menu state (M29)
+  const [sidebarContextMenu, setSidebarContextMenu] = useState<{ table: TableInfo; x: number; y: number } | null>(null);
+  const [sidebarSortBy, setSidebarSortBy] = useState<SidebarSortBy>('name');
+  const [showSystemTables, setShowSystemTables] = useState<boolean>(
+    () => localStorage.getItem('squad:show-system-tables') === 'true'
+  );
+  const [erDiagramOpen, setErDiagramOpen] = useState<boolean>(false);
 
   // Pagination & Sorting & Filtering states
   const [page, setPage] = useState<number>(1);
@@ -797,7 +822,7 @@ export default function App() {
     setInfoError(null);
     Promise.all([
       apiFetch('/meta').then(res => res.json()),
-      apiFetch('/tables').then(res => res.json())
+      apiFetch(`/tables${showSystemTables ? '?includeSystem=true' : ''}`).then(res => res.json())
     ])
       .then(([metaBody, tablesBody]) => {
         if (metaBody.ok) {
@@ -1213,12 +1238,118 @@ export default function App() {
     try {
       await dropTable(selectedTable.name);
       showToast(`Table "${selectedTable.name}" dropped successfully!`, 'success');
-      
+
       fetchMetaAndTables();
       setSelectedTable(null);
       setActiveTab('info');
     } catch (err: any) {
       showToast(err.message || 'Failed to drop table', 'error');
+    }
+  };
+
+  // ============ Sidebar context menu & kebab menu handlers (M29) ============
+  const quoteIdentifier = (name: string) => `"${name.replace(/"/g, '""')}"`;
+
+  const handleSidebarQuery = (table: ContextMenuTableInfo) => {
+    setEditorContents(`SELECT * FROM ${quoteIdentifier(table.name)} LIMIT 100;`);
+    setActiveTab('sql');
+  };
+
+  const handleSidebarCopyName = (table: ContextMenuTableInfo) => {
+    copyToClipboard(table.name);
+  };
+
+  const handleSidebarCopyDDL = async (table: ContextMenuTableInfo) => {
+    try {
+      const res = await apiFetch(`/tables/${encodeURIComponent(table.name)}/schema`);
+      const body = await res.json();
+      if (!res.ok || !body.ok) throw new Error(body.error?.message || 'Failed to fetch schema');
+      navigator.clipboard.writeText(body.data.ddl);
+      showToast('Copied DDL', 'success');
+    } catch (err: any) {
+      showToast(err.message || 'Failed to copy DDL', 'error');
+    }
+  };
+
+  const handleSidebarExport = (table: ContextMenuTableInfo, format: string) => {
+    window.location.href = apiUrl(`/tables/${encodeURIComponent(table.name)}/export?format=${format}`);
+  };
+
+  const handleSidebarDuplicate = async (table: ContextMenuTableInfo, newName: string, includeData: boolean) => {
+    try {
+      await duplicateTable(table.name, newName, includeData);
+      showToast(`Table "${newName}" created${includeData ? '' : ' (schema only)'}!`, 'success');
+      fetchMetaAndTables();
+    } catch (err: any) {
+      showToast(err.message || 'Failed to duplicate table', 'error');
+    }
+  };
+
+  const handleSidebarRename = async (table: ContextMenuTableInfo, newName: string) => {
+    try {
+      await alterTable(table.name, { op: 'rename_table', newName });
+      showToast(`Renamed to "${newName}"`, 'success');
+      fetchMetaAndTables();
+      if (selectedTable?.name === table.name) {
+        setSelectedTable({ ...selectedTable, name: newName });
+      }
+    } catch (err: any) {
+      showToast(err.message || 'Failed to rename table', 'error');
+    }
+  };
+
+  const handleSidebarTruncate = async (table: ContextMenuTableInfo) => {
+    try {
+      await runQuery(`DELETE FROM ${quoteIdentifier(table.name)}`);
+      showToast(`Table "${table.name}" truncated`, 'success');
+      fetchMetaAndTables();
+      if (selectedTable?.name === table.name) {
+        setRefetchTrigger((prev) => prev + 1);
+      }
+    } catch (err: any) {
+      showToast(err.message || 'Failed to truncate table', 'error');
+    }
+  };
+
+  const handleSidebarDrop = async (table: ContextMenuTableInfo) => {
+    try {
+      await dropTable(table.name);
+      showToast(`Table "${table.name}" dropped successfully!`, 'success');
+      fetchMetaAndTables();
+      if (selectedTable?.name === table.name) {
+        setSelectedTable(null);
+        setActiveTab('info');
+      }
+    } catch (err: any) {
+      showToast(err.message || 'Failed to drop table', 'error');
+    }
+  };
+
+  const handleSidebarCreateTable = () => {
+    setEditorContents('CREATE TABLE new_table (\n  id INTEGER PRIMARY KEY\n);');
+    setActiveTab('sql');
+  };
+
+  const handleSidebarCreateView = () => {
+    setEditorContents('CREATE VIEW new_view AS\nSELECT ...;');
+    setActiveTab('sql');
+  };
+
+  const handleSidebarExportAll = () => {
+    window.location.href = apiUrl('/export/all');
+  };
+
+  const handleShowSystemTablesChange = (show: boolean) => {
+    setShowSystemTables(show);
+    localStorage.setItem('squad:show-system-tables', String(show));
+    if (show) {
+      apiFetch('/tables?includeSystem=true')
+        .then((res) => res.json())
+        .then((body) => {
+          if (body.ok) setTables(body.data ?? []);
+        });
+    } else {
+      fetchMetaAndTables();
     }
   };
 
@@ -2016,9 +2147,10 @@ export default function App() {
   const sqliteVer = meta?.sqliteVersion || 'unknown';
   const dbSize = meta ? formatBytes(meta.sizeBytes) : '0 B';
 
-  const filteredTables = tables.filter((t) =>
-    t.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filteredTables = tables
+    .filter((t) => t.name.toLowerCase().includes(searchQuery.toLowerCase()))
+    .filter((t) => showSystemTables || !t.name.startsWith('sqlite_'))
+    .sort((a, b) => (sidebarSortBy === 'rowcount' ? b.rowCount - a.rowCount : a.name.localeCompare(b.name)));
 
   const totalRows = rowsData?.total || 0;
   const totalPages = Math.ceil(totalRows / pageSize) || 1;
@@ -2229,8 +2361,21 @@ export default function App() {
               className="w-full text-sm px-2.5 py-1.5 rounded-md bg-slate-100 dark:bg-slate-800 border border-transparent focus:border-indigo-400 outline-none text-slate-950 dark:text-white"
             />
           </div>
-          <div className="px-3 pt-1 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+          <div className="px-3 pt-1 pb-1 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
             Tables & Views
+            <SidebarSectionMenu
+              isWrite={isWrite}
+              sortBy={sidebarSortBy}
+              onSortByChange={setSidebarSortBy}
+              showSystemTables={showSystemTables}
+              onShowSystemTablesChange={handleShowSystemTablesChange}
+              onCreateTable={handleSidebarCreateTable}
+              onCreateView={handleSidebarCreateView}
+              onImportTable={() => setImportModalOpen(true)}
+              onRefresh={fetchMetaAndTables}
+              onExportAll={handleSidebarExportAll}
+              onShowErDiagram={() => setErDiagramOpen(true)}
+            />
           </div>
           <nav className="flex-1 overflow-y-auto px-2 text-sm space-y-0.5">
             {tablesLoading && tables.length === 0 ? (
@@ -2252,6 +2397,10 @@ export default function App() {
                 <div
                   key={t.name}
                   onClick={() => setSelectedTable(t)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setSidebarContextMenu({ table: t, x: e.clientX, y: e.clientY });
+                  }}
                   className={`flex items-center justify-between px-2 py-1.5 rounded-md cursor-pointer ${
                     selectedTable?.name === t.name
                       ? 'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-300'
@@ -4047,6 +4196,33 @@ export default function App() {
           onCancel={() => setTransformTarget(null)}
           onApplyDirect={applyTransformDirect}
           onCopyAsUpdateSQL={copyTransformAsUpdateSQL}
+        />
+      )}
+
+      {sidebarContextMenu && (
+        <TableContextMenu
+          table={sidebarContextMenu.table}
+          x={sidebarContextMenu.x}
+          y={sidebarContextMenu.y}
+          isWrite={isWrite}
+          onClose={() => setSidebarContextMenu(null)}
+          onQuery={handleSidebarQuery}
+          onCopyName={handleSidebarCopyName}
+          onCopyDDL={handleSidebarCopyDDL}
+          onExport={handleSidebarExport}
+          onDuplicate={handleSidebarDuplicate}
+          onRename={handleSidebarRename}
+          onTruncate={handleSidebarTruncate}
+          onDrop={handleSidebarDrop}
+        />
+      )}
+
+      {erDiagramOpen && (
+        <ErDiagramModal
+          tables={tables}
+          theme={resolvedDark ? 'dark' : 'light'}
+          onClose={() => setErDiagramOpen(false)}
+          onToast={(message, type) => showToast(message, type)}
         />
       )}
 

@@ -109,7 +109,8 @@ func ExportJSON(columns []string, source RowSource, w io.Writer) error {
 // ExportSQL streams rows as a sequence of SQL INSERT statements.
 func ExportSQL(tableName string, columns []string, source RowSource, w io.Writer, includeSchema bool, ddl string) error {
 	if includeSchema && ddl != "" {
-		if _, err := io.WriteString(w, ddl+"\n\n"); err != nil {
+		terminated := strings.TrimRight(ddl, " \t\n;")
+		if _, err := io.WriteString(w, terminated+";\n\n"); err != nil {
 			return err
 		}
 	}
